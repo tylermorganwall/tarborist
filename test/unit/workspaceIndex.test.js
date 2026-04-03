@@ -1,0 +1,135 @@
+"use strict";
+
+// Fixture-driven regression tests for the static workspace index.
+const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
+const test = require("node:test");
+
+const { buildStaticWorkspaceIndex } = require("../../src/index/pipelineResolver");
+const { ensureParserReady, parseText } = require("../../src/parser/treeSitter");
+
+function buildIndex(fixtureName) {
+  // Each fixture directory acts like a tiny standalone targets project.
+  const root = path.resolve(__dirname, "..", "fixtures", fixtureName);
+  return buildStaticWorkspaceIndex({
+    readFile: (file) => fs.readFileSync(file, "utf8"),
+    workspaceRoot: root
+  });
+}
+
+test.before(async () => {
+  await ensureParserReady();
+});
+
+test("parses large target files without native tree-sitter failures", () => {
+  const repeatedTarget = [
+    "tar_target(",
+    "  name = example_target,",
+    "  command = {",
+    "    tibble::tibble(x = 1:10, y = x + 1)",
+    "  }",
+    ")"
+  ].join("\n");
+  const largeFile = `list(\n${Array.from({ length: 250 }, () => repeatedTarget).join(",\n")}\n)\n`;
+  const tree = parseText(largeFile);
+
+  assert.equal(tree.rootNode.type, "program");
+  assert.equal(tree.rootNode.hasError, false);
+});
+
+test("indexes direct targets and direct dependencies", () => {
+  const index = buildIndex("direct");
+  assert.deepEqual([...index.targets.keys()], ["a", "b"]);
+
+  const bRefs = index.refs.filter((ref) => ref.enclosingTarget === "b" && !ref.synthetic);
+  assert.equal(bRefs.length, 1);
+  assert.equal(bRefs[0].targetName, "a");
+  assert.equal(bRefs[0].context, "command");
+  assert.deepEqual([...index.graph.descendants.get("a")], ["b"]);
+});
+
+test("detects static cycles and emits diagnostics", () => {
+  const index = buildIndex("cycle");
+  assert.equal(index.partial, false);
+  assert.equal(index.graph.cycles.length, 1);
+  assert.deepEqual(new Set(index.graph.cycles[0]), new Set(["a", "b"]));
+
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.severity === "error" && diagnostic.message.includes("Cycle detected")));
+});
+
+test("indexes sourced partial pipelines across files", () => {
+  const index = buildIndex("sourced");
+  const targetA = index.targets.get("a");
+  const targetB = index.targets.get("b");
+
+  assert.ok(targetA.file.endsWith(path.join("sourced", "part.R")));
+  assert.ok(targetB.file.endsWith(path.join("sourced", "part.R")));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "b" && ref.targetName === "a"));
+});
+
+test("indexes tar_source imports and records import edges", () => {
+  const index = buildIndex("tar_source");
+  const importedFile = path.join("tar_source", "R", "part.R");
+
+  assert.ok(index.imports.some((edge) => edge.toFile.endsWith(importedFile)));
+  assert.ok(index.targets.has("a"));
+  assert.ok(index.targets.has("b"));
+
+  const rootRecord = [...index.files.values()].find((record) => record.file.endsWith(path.join("tar_source", "_targets.R")));
+  assert.equal(rootRecord.importLinks.length, 1);
+  assert.ok(rootRecord.importLinks[0].target.endsWith(path.join("tar_source", "R")));
+});
+
+test("expands statically resolvable tar_map calls", () => {
+  const index = buildIndex("tar_map");
+
+  assert.deepEqual(
+    [...index.targets.keys()],
+    [
+      "fit_penguins_adelie",
+      "report_penguins_adelie",
+      "fit_penguins_gentoo",
+      "report_penguins_gentoo"
+    ]
+  );
+
+  const generated = index.targets.get("fit_penguins_adelie");
+  assert.equal(generated.generated, true);
+  assert.equal(generated.generator.templateName, "fit_penguins");
+  assert.ok(generated.generator.generatedNamesPreview.includes("fit_penguins_adelie"));
+
+  assert.ok(index.refs.some((ref) => ref.synthetic && ref.enclosingTarget === "report_penguins_adelie" && ref.targetName === "fit_penguins_adelie"));
+  assert.equal(index.generators.length, 1);
+  assert.equal(index.generators[0].count, 4);
+});
+
+test("does not create self-cycles for target-local shadowed variables", () => {
+  const index = buildIndex("local_shadow");
+  const refs = index.refs.filter((ref) => ref.enclosingTarget === "designs_gl_theta_tbl");
+
+  assert.deepEqual(refs.map((ref) => ref.targetName), ["designs_gl"]);
+  assert.equal(index.graph.cycles.length, 0);
+  assert.equal((index.graph.descendants.get("designs_gl_theta_tbl") || new Set()).size, 0);
+});
+
+test("ignores NULL pipeline entries without marking the index partial", () => {
+  const index = buildIndex("null_ignore");
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+
+  assert.equal(index.partial, false);
+  assert.deepEqual([...index.targets.keys()], ["a", "b"]);
+  assert.ok(!diagnostics.some((diagnostic) => diagnostic.message.includes("unsupported expression in pipeline")));
+});
+
+test("captures cue and parallel target options verbatim", () => {
+  const index = buildIndex("target_options");
+  const target = index.targets.get("a");
+
+  assert.equal(target.options.cue, "cue_on_global(\"yes\")");
+  assert.deepEqual(target.options.parallel, [
+    "deployment = \"main\"",
+    "priority = 10"
+  ]);
+});

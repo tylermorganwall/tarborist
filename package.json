@@ -1,0 +1,47 @@
+{
+  "name": "tarborist",
+  "publisher": "tylermorganwall",
+  "displayName": "tarborist",
+  "description": "Static analysis for navigating and debugging complex R targets pipelines",
+  "icon": "tarborist.png",
+  "license": "GPL-3.0-or-later",
+  "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tylermorganwall/tarborist.git"
+  },
+  "private": true,
+  "engines": {
+    "positron": "^2025.6.0",
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:r",
+    "onStartupFinished",
+    "workspaceContains:_targets.R"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tarborist.refreshIndex",
+        "title": "tarborist: Refresh Pipeline Index"
+      }
+    ]
+  },
+  "scripts": {
+    "test": "node --test test/unit/*.test.js"
+  },
+  "dependencies": {
+    "@davisvaughan/tree-sitter-r": "^1.2.0",
+    "web-tree-sitter": "^0.26.8"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.96.0",
+    "@vscode/vsce": "^3.7.1"
+  }
+}

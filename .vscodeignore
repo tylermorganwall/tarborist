@@ -1,0 +1,3 @@
+.gitignore
+test/**
+package-lock.json
