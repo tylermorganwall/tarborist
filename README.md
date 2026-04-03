@@ -1,4 +1,7 @@
-# tarborist
+
+# tarborist 
+
+![](https://raw.githubusercontent.com/tylermorganwall/tarborist/refs/heads/main/tarborist.gif)
 
 Static analysis for navigating and debugging complex R `targets` pipelines in Positron and VS Code.
 
