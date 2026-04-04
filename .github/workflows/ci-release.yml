@@ -1,0 +1,114 @@
+name: CI and Release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+  build-vsix:
+    name: Build VSIX
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      vsix_name: ${{ steps.package.outputs.vsix_name }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package extension
+        id: package
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          VSIX_NAME="tarborist-${VERSION}.vsix"
+          ./node_modules/.bin/vsce package --out "${VSIX_NAME}"
+          echo "vsix_name=${VSIX_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.vsix_name }}
+          path: ${{ steps.package.outputs.vsix_name }}
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: build-vsix
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-vsix.outputs.vsix_name }}
+          path: .
+
+      - name: Verify tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="$(node -p "require('./package.json').version")"
+          EXPECTED_TAG="v${VERSION}"
+
+          if [ "${TAG}" != "${EXPECTED_TAG}" ]; then
+            echo "Tag ${TAG} does not match package.json version ${VERSION}."
+            exit 1
+          fi
+
+      - name: Create or update GitHub release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VSIX_NAME="${{ needs.build-vsix.outputs.vsix_name }}"
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${VSIX_NAME}" --clobber
+          else
+            gh release create "${TAG}" "${VSIX_NAME}" \
+              --verify-tag \
+              --generate-notes \
+              --title "tarborist ${TAG}"
+          fi

@@ -137,8 +137,10 @@ test("captures cue and parallel target options verbatim", () => {
 test("indexes tar_assign() blocks as target lists", () => {
   const index = buildIndex("tar_assign");
 
-  assert.deepEqual([...index.targets.keys()], ["alpha", "beta"]);
+  assert.deepEqual([...index.targets.keys()], ["alpha", "beta", "gamma"]);
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "beta" && ref.targetName === "alpha"));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "gamma" && ref.targetName === "alpha"));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "gamma" && ref.targetName === "beta"));
 });
 
 test("indexes tar_select_targets() with tidyselect operators", () => {

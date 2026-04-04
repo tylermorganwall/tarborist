@@ -133,8 +133,8 @@ test("hovering a tar_combine() alias outside target code uses the target hover",
   const filePath = path.join(root, "_targets.R");
   const text = fs.readFileSync(filePath, "utf8");
   const document = createDocument(text, filePath);
-  const symbolOffset = text.lastIndexOf("combined)");
-  const position = document.positionAt(symbolOffset);
+  const lineIndex = text.split("\n").findIndex((line) => line.trim() === "combined");
+  const position = { line: lineIndex, character: 2 };
   const provider = new TargetHoverProvider({
     async getIndexForUri() {
       return index;
