@@ -133,3 +133,32 @@ test("captures cue and parallel target options verbatim", () => {
     "priority = 10"
   ]);
 });
+
+test("indexes tar_assign() blocks as target lists", () => {
+  const index = buildIndex("tar_assign");
+
+  assert.deepEqual([...index.targets.keys()], ["alpha", "beta"]);
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "beta" && ref.targetName === "alpha"));
+});
+
+test("indexes tar_select_targets() with tidyselect operators", () => {
+  const index = buildIndex("tar_select_targets");
+
+  assert.deepEqual([...index.targets.keys()], ["alpha", "gamma"]);
+});
+
+test("scans tar_quarto() documents for tar_read()/tar_load() dependencies", () => {
+  const index = buildIndex("tar_quarto");
+  const report = index.targets.get("report");
+
+  assert.ok(report);
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "report" && ref.targetName === "data" && ref.context === "tar_read"));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "report" && ref.targetName === "other" && ref.context === "tar_load"));
+});
+
+test("indexes tar_combine() upstream target arguments", () => {
+  const index = buildIndex("tar_combine");
+  const refs = index.refs.filter((ref) => ref.enclosingTarget === "combined");
+
+  assert.deepEqual(refs.map((ref) => ref.targetName).sort(), ["first", "second"]);
+});

@@ -11,6 +11,26 @@ const MAP_CALLS = new Set([
   "tarchetypes::tar_map"
 ]);
 
+const ASSIGN_CALLS = new Set([
+  "tar_assign",
+  "tarchetypes::tar_assign"
+]);
+
+const SELECT_TARGETS_CALLS = new Set([
+  "tar_select_targets",
+  "tarchetypes::tar_select_targets"
+]);
+
+const QUARTO_CALLS = new Set([
+  "tar_quarto",
+  "tarchetypes::tar_quarto"
+]);
+
+const COMBINE_CALLS = new Set([
+  "tar_combine",
+  "tarchetypes::tar_combine"
+]);
+
 const SOURCE_CALLS = new Set([
   "source",
   "base::source"
@@ -54,9 +74,13 @@ const TAR_MAP_CONTROL_ARGUMENTS = new Set([
 ]);
 
 module.exports = {
+  ASSIGN_CALLS,
+  COMBINE_CALLS,
   DIRECT_TARGET_CALLS,
   IMPORT_CALLS,
   MAP_CALLS,
+  QUARTO_CALLS,
+  SELECT_TARGETS_CALLS,
   SOURCE_CALLS,
   TAR_MAP_CONTROL_ARGUMENTS,
   TAR_SOURCE_CALLS,

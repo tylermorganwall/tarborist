@@ -1,0 +1,9 @@
+---
+title: "tar_quarto demo"
+format: html
+---
+
+```{r}
+summary_value <- tar_read(data)
+tar_load(other)
+```

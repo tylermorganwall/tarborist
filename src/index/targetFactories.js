@@ -62,6 +62,31 @@ function extractTargetOptions(callNode) {
   return options;
 }
 
+function createTargetDefinition(file, callNode, options) {
+  const targetOptions = options.targetOptions || extractTargetOptions(callNode);
+
+  return {
+    name: options.name,
+    file,
+    nameRange: rangeFromNode(options.nameNode || callNode),
+    fullRange: rangeFromNode(options.fullNode || callNode),
+    commandRange: options.commandNode ? rangeFromNode(options.commandNode) : null,
+    patternRange: options.patternNode ? rangeFromNode(options.patternNode) : null,
+    origin: options.origin || "tar_target",
+    generated: Boolean(options.generated),
+    generator: options.generator || undefined,
+    options: targetOptions,
+    _analysis: {
+      bindings: options.bindings || null,
+      commandNode: options.commandNode || null,
+      externalRefs: options.externalRefs || [],
+      patternNode: options.patternNode || null,
+      templateName: options.templateName || options.name,
+      templateNameMap: options.templateNameMap || null
+    }
+  };
+}
+
 function parseTarTargetCall(callNode, file, options = {}) {
   const nameArgument = getNamedArgument(callNode, "name") || getPositionalArgument(callNode, 0);
   const commandArgument = getNamedArgument(callNode, "command") || getPositionalArgument(callNode, 1);
@@ -69,14 +94,21 @@ function parseTarTargetCall(callNode, file, options = {}) {
   const rawCommandNode = commandArgument ? getArgumentValue(commandArgument.node) : null;
   const rawPatternNode = patternArgument ? getArgumentValue(patternArgument.node) : null;
 
-  if (!nameArgument || !commandArgument || !nameArgument.value || !rawCommandNode) {
+  if ((!nameArgument || !nameArgument.value) && !options.nameOverride) {
+    return {
+      ok: false,
+      reason: "Could not statically resolve tar_target() name"
+    };
+  }
+
+  if (!commandArgument || !rawCommandNode) {
     return {
       ok: false,
       reason: "Could not statically resolve tar_target() arguments"
     };
   }
 
-  const name = extractTargetName(nameArgument.value);
+  const name = options.nameOverride || extractTargetName(nameArgument.value);
   if (!name) {
     return {
       ok: false,
@@ -84,28 +116,23 @@ function parseTarTargetCall(callNode, file, options = {}) {
     };
   }
 
-  const targetOptions = extractTargetOptions(callNode);
   // Keep the raw command/pattern nodes around so later passes can extract refs
   // and completion regions without reparsing strings.
-  const target = {
+  const target = createTargetDefinition(file, callNode, {
+    bindings: options.bindings,
+    commandNode: rawCommandNode || null,
+    externalRefs: options.externalRefs,
+    fullNode: callNode,
+    generated: options.generated,
+    generator: options.generator,
     name,
-    file,
-    nameRange: rangeFromNode(nameArgument.value),
-    fullRange: rangeFromNode(callNode),
-    commandRange: rawCommandNode ? rangeFromNode(rawCommandNode) : null,
-    patternRange: rawPatternNode ? rangeFromNode(rawPatternNode) : null,
-    origin: options.origin || "tar_target",
-    generated: Boolean(options.generated),
-    generator: options.generator || undefined,
-    options: targetOptions,
-    _analysis: {
-      bindings: options.bindings || null,
-      commandNode: rawCommandNode || null,
-      patternNode: rawPatternNode || null,
-      templateName: options.templateName || name,
-      templateNameMap: options.templateNameMap || null
-    }
-  };
+    nameNode: options.nameNodeOverride || nameArgument.value,
+    origin: options.origin,
+    patternNode: rawPatternNode || null,
+    targetOptions: options.targetOptions,
+    templateName: options.templateName || name,
+    templateNameMap: options.templateNameMap || null
+  });
 
   return {
     ok: true,
@@ -114,5 +141,8 @@ function parseTarTargetCall(callNode, file, options = {}) {
 }
 
 module.exports = {
+  createTargetDefinition,
+  extractTargetName,
+  extractTargetOptions,
   parseTarTargetCall
 };

@@ -6,10 +6,24 @@ const path = require("path");
 
 const { createDiagnostic } = require("../diagnostics/unresolvedDiagnostics");
 const { buildCycleDiagnostics } = require("../diagnostics/cycleDiagnostics");
-const { getPositionalArgument, getShortCallName, getStringValue, isStringNode, matchesCall, unpackArguments, unwrapNode } = require("../parser/ast");
 const {
+  getArgumentValue,
+  getNamedArgument,
+  getPositionalArgument,
+  getShortCallName,
+  getStringValue,
+  isStringNode,
+  matchesCall,
+  unpackArguments,
+  unwrapNode
+} = require("../parser/ast");
+const {
+  ASSIGN_CALLS,
+  COMBINE_CALLS,
   DIRECT_TARGET_CALLS,
   MAP_CALLS,
+  QUARTO_CALLS,
+  SELECT_TARGETS_CALLS,
   TARGET_LOAD_CALLS,
   TARGET_LOAD_RAW_CALLS,
   TARGET_READ_CALLS,
@@ -19,9 +33,11 @@ const { compareRanges, rangeFromNode, zeroRange } = require("../util/ranges");
 const { normalizeFile, pathExists } = require("../util/paths");
 const { analyzeFile } = require("./fileRecord");
 const { buildPipelineGraph } = require("./graph");
-const { resolveImportCall } = require("./importResolver");
+const { resolveFilePathExpression, resolveImportCall } = require("./importResolver");
+const { scanQuartoDependencyRefs } = require("./quartoScanner");
 const { expandTarMap } = require("./tarMapExpander");
-const { parseTarTargetCall } = require("./targetFactories");
+const { evaluateTidyselectNode } = require("./tidyselect");
+const { createTargetDefinition, extractTargetName, extractTargetOptions, parseTarTargetCall } = require("./targetFactories");
 
 function makeUnknown(file, range, message, alreadyDiagnosed = false) {
   return {
@@ -83,6 +99,7 @@ function getLocalAssignmentParts(node) {
     return {
       operator: operatorText,
       symbol: lhs.text,
+      symbolNode: lhs,
       valueNode: rhs
     };
   }
@@ -91,11 +108,252 @@ function getLocalAssignmentParts(node) {
     return {
       operator: operatorText,
       symbol: rhs.text,
+      symbolNode: rhs,
       valueNode: lhs
     };
   }
 
   return null;
+}
+
+function resolveFactoryName(callNode, forcedName, forcedNameNode) {
+  const nameArgument = getNamedArgument(callNode, "name") || getPositionalArgument(callNode, 0);
+  const name = forcedName || extractTargetName(nameArgument && nameArgument.value);
+  return {
+    name,
+    nameArgument,
+    nameNode: forcedNameNode || (nameArgument && nameArgument.value) || callNode
+  };
+}
+
+function resolveTarAssignCall(callNode, env, state, file) {
+  const bodyArgument = getNamedArgument(callNode, "targets") || getPositionalArgument(callNode, 0);
+  const rawBodyNode = bodyArgument ? getArgumentValue(bodyArgument.node) : null;
+  if (!bodyArgument || !rawBodyNode) {
+    return makeUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: tar_assign() requires assignment expressions");
+  }
+
+  const body = unwrapExpressionNode(rawBodyNode);
+  const statements = body && body.type === "braced_expression" ? body.namedChildren || [] : [body];
+  const localEnv = new Map(env);
+  const items = [];
+
+  for (const statement of statements) {
+    const assignment = getLocalAssignmentParts(statement);
+    if (!assignment || !assignment.symbolNode) {
+      items.push(makeUnknown(file, rangeFromNode(statement || bodyArgument.value), "Static pipeline analysis is partial: tar_assign() requires target factory assignments"));
+      continue;
+    }
+
+    const resolved = resolveTargetFactoryCall(
+      assignment.valueNode,
+      localEnv,
+      state,
+      file,
+      assignment.symbol,
+      assignment.symbolNode
+    );
+
+    localEnv.set(assignment.symbol, resolved);
+    items.push(resolved);
+  }
+
+  return makeTargetList(items);
+}
+
+function resolveTarSelectTargetsCall(callNode, env, state, file) {
+  const targetsArgument = getNamedArgument(callNode, "targets") || getPositionalArgument(callNode, 0);
+  if (!targetsArgument || !targetsArgument.value) {
+    return makeUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: tar_select_targets() requires a target list");
+  }
+
+  const resolvedTargets = resolveTopLevelValue(targetsArgument.value, env, state, file);
+  const availableTargets = flattenResolvedTargets(resolvedTargets, state);
+  const availableNames = availableTargets.map((target) => target.name);
+  const availableByName = new Map(availableTargets.map((target) => [target.name, target]));
+  const selectorArguments = unpackArguments(callNode).filter((argument) => argument.node !== targetsArgument.node && !argument.name);
+
+  if (!selectorArguments.length) {
+    return makeTargetList(availableTargets.map((target) => makeTargetObject(target)));
+  }
+
+  const selectedNames = [];
+  const seen = new Set();
+  for (const argument of selectorArguments) {
+    const selected = evaluateTidyselectNode(argument.value, availableNames);
+    if (!selected.ok) {
+      return makeUnknown(
+        file,
+        rangeFromNode(argument.value),
+        `Static pipeline analysis is partial: could not statically resolve tar_select_targets(): ${selected.reason}`
+      );
+    }
+
+    for (const name of selected.names) {
+      if (seen.has(name)) {
+        continue;
+      }
+
+      seen.add(name);
+      selectedNames.push(name);
+    }
+  }
+
+  return makeTargetList(
+    selectedNames
+      .map((name) => availableByName.get(name))
+      .filter(Boolean)
+      .map((target) => makeTargetObject(target))
+  );
+}
+
+function resolveTarQuartoCall(callNode, env, state, file, forcedName = null, forcedNameNode = null) {
+  const { name, nameNode } = resolveFactoryName(callNode, forcedName, forcedNameNode);
+  if (!name) {
+    return makeUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: could not statically resolve tar_quarto() name");
+  }
+
+  const pathArgument = getNamedArgument(callNode, "path") || getPositionalArgument(callNode, 1);
+  const target = createTargetDefinition(file, callNode, {
+    fullNode: callNode,
+    name,
+    nameNode,
+    origin: "tar_quarto",
+    targetOptions: extractTargetOptions(callNode)
+  });
+
+  if (!pathArgument || !pathArgument.value) {
+    addDiagnostic(state, file, rangeFromNode(callNode), "warning", "Could not statically resolve tar_quarto() path expression");
+    return makeTargetObject(target);
+  }
+
+  const resolved = resolveFilePathExpression(pathArgument.value, file);
+  if (!resolved.ok) {
+    addDiagnostic(state, file, rangeFromNode(pathArgument.value), "warning", "Could not statically resolve tar_quarto() path expression");
+    return makeTargetObject(target);
+  }
+
+  const refs = [];
+  for (const item of resolved.items) {
+    if (!pathExists(item.resolvedPath)) {
+      addDiagnostic(state, file, item.range || rangeFromNode(pathArgument.value), "warning", `Could not resolve tar_quarto() path '${item.value}'`);
+      continue;
+    }
+
+    const scanned = scanQuartoDependencyRefs(item.resolvedPath, state.readFile);
+    if (!scanned.files.length) {
+      addDiagnostic(state, file, item.range || rangeFromNode(pathArgument.value), "information", `tar_quarto() path '${item.value}' did not resolve to any .qmd or .Rmd files`);
+      continue;
+    }
+
+    refs.push(...scanned.refs);
+  }
+
+  target._analysis.externalRefs = refs;
+  return makeTargetObject(target);
+}
+
+function resolveTarCombineCall(callNode, env, state, file, forcedName = null, forcedNameNode = null) {
+  const { name, nameArgument, nameNode } = resolveFactoryName(callNode, forcedName, forcedNameNode);
+  if (!name) {
+    return makeUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: could not statically resolve tar_combine() name");
+  }
+
+  const commandArgument = getNamedArgument(callNode, "command");
+  const patternArgument = getNamedArgument(callNode, "pattern");
+  const rawCommandNode = commandArgument ? getArgumentValue(commandArgument.node) : null;
+  const rawPatternNode = patternArgument ? getArgumentValue(patternArgument.node) : null;
+  const externalRefs = [];
+
+  for (const argument of unpackArguments(callNode)) {
+    if (nameArgument && argument.node === nameArgument.node) {
+      continue;
+    }
+
+    if (argument.name) {
+      continue;
+    }
+
+    const resolved = resolveTopLevelValue(argument.value, env, state, file);
+    for (const upstreamTarget of flattenResolvedTargets(resolved, state)) {
+      externalRefs.push({
+        context: "command",
+        file,
+        range: rangeFromNode(argument.value),
+        synthetic: true,
+        targetName: upstreamTarget.name
+      });
+    }
+  }
+
+  const target = createTargetDefinition(file, callNode, {
+    commandNode: rawCommandNode,
+    externalRefs,
+    fullNode: callNode,
+    name,
+    nameNode,
+    origin: "tar_combine",
+    patternNode: rawPatternNode,
+    targetOptions: extractTargetOptions(callNode)
+  });
+
+  return makeTargetObject(target);
+}
+
+function resolveTargetFactoryCall(node, env, state, file, forcedName = null, forcedNameNode = null) {
+  const current = unwrapNode(node);
+  if (!current || current.type !== "call") {
+    return makeUnknown(file, rangeFromNode(current || node), "Static pipeline analysis is partial: unsupported expression in pipeline");
+  }
+
+  if (matchesCall(current, DIRECT_TARGET_CALLS)) {
+    const parsed = parseTarTargetCall(current, file, {
+      nameNodeOverride: forcedNameNode,
+      nameOverride: forcedName,
+      origin: "tar_target"
+    });
+
+    if (!parsed.ok) {
+      return makeUnknown(file, rangeFromNode(current), `Static pipeline analysis is partial: ${parsed.reason}`);
+    }
+
+    return makeTargetObject(parsed.target);
+  }
+
+  if (matchesCall(current, QUARTO_CALLS)) {
+    return resolveTarQuartoCall(current, env, state, file, forcedName, forcedNameNode);
+  }
+
+  if (matchesCall(current, COMBINE_CALLS)) {
+    return resolveTarCombineCall(current, env, state, file, forcedName, forcedNameNode);
+  }
+
+  if (matchesCall(current, MAP_CALLS)) {
+    const expanded = expandTarMap(current, file);
+    for (const diagnostic of expanded.diagnostics || []) {
+      addDiagnostic(state, file, diagnostic.range, diagnostic.severity, diagnostic.message);
+    }
+
+    if (expanded.kind === "Unknown") {
+      return expanded;
+    }
+
+    return expanded;
+  }
+
+  if (matchesCall(current, ASSIGN_CALLS)) {
+    return resolveTarAssignCall(current, env, state, file);
+  }
+
+  if (matchesCall(current, SELECT_TARGETS_CALLS)) {
+    return resolveTarSelectTargetsCall(current, env, state, file);
+  }
+
+  if (matchesCall(current, new Set(["list"]))) {
+    return makeTargetList(unpackArguments(current).map((argument) => resolveTopLevelValue(argument.value, env, state, file)));
+  }
+
+  return makeUnknown(file, rangeFromNode(current), "Static pipeline analysis is partial: unsupported expression in pipeline");
 }
 
 function resolveTopLevelValue(node, env, state, file) {
@@ -122,36 +380,7 @@ function resolveTopLevelValue(node, env, state, file) {
     return makeUnknown(file, rangeFromNode(current), "Static pipeline analysis is partial: unsupported expression in pipeline");
   }
 
-  if (matchesCall(current, DIRECT_TARGET_CALLS)) {
-    const parsed = parseTarTargetCall(current, file, {
-      origin: "tar_target"
-    });
-
-    if (!parsed.ok) {
-      return makeUnknown(file, rangeFromNode(current), `Static pipeline analysis is partial: ${parsed.reason}`);
-    }
-
-    return makeTargetObject(parsed.target);
-  }
-
-  if (matchesCall(current, MAP_CALLS)) {
-    const expanded = expandTarMap(current, file);
-    for (const diagnostic of expanded.diagnostics || []) {
-      addDiagnostic(state, file, diagnostic.range, diagnostic.severity, diagnostic.message);
-    }
-
-    if (expanded.kind === "Unknown") {
-      return expanded;
-    }
-
-    return expanded;
-  }
-
-  if (matchesCall(current, new Set(["list"]))) {
-    return makeTargetList(unpackArguments(current).map((argument) => resolveTopLevelValue(argument.value, env, state, file)));
-  }
-
-  return makeUnknown(file, rangeFromNode(current), "Static pipeline analysis is partial: unsupported expression in pipeline");
+  return resolveTargetFactoryCall(current, env, state, file);
 }
 
 function flattenResolvedTargets(value, state) {
@@ -413,6 +642,21 @@ function extractTargetRefs(targets) {
   const refs = [];
 
   for (const target of targets.values()) {
+    for (const externalRef of target._analysis.externalRefs || []) {
+      if (!knownTargets.has(externalRef.targetName)) {
+        continue;
+      }
+
+      refs.push({
+        context: externalRef.context || "command",
+        enclosingTarget: target.name,
+        file: externalRef.file || target.file,
+        range: externalRef.range || target.nameRange,
+        synthetic: Boolean(externalRef.synthetic),
+        targetName: externalRef.targetName
+      });
+    }
+
     if (target._analysis.commandNode) {
       extractRefsFromExpression(target, target._analysis.commandNode, "command", knownTargets, refs);
     }

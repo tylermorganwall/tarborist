@@ -228,5 +228,6 @@ function resolveImportCall(callNode, fromFile) {
 }
 
 module.exports = {
+  resolveFilePathExpression,
   resolveImportCall
 };

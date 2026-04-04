@@ -178,6 +178,67 @@ function collectTargetsFromListCall(index, file, document, position) {
   return targets;
 }
 
+function buildTargetHover(index, root, target) {
+  // Target hovers are the main navigation surface: show graph info and link
+  // related targets directly from the hover body.
+  const markdown = createMarkdown();
+  const upstream = [...(index.graph.downstreamToUpstream.get(target.name) || new Set())].sort();
+  const downstreamTargets = [...(index.graph.descendants.get(target.name) || new Set())]
+    .sort()
+    .map((targetName) => index.targets.get(targetName))
+    .filter(Boolean);
+  const downstreamCount = (index.graph.descendants.get(target.name) || new Set()).size;
+
+  if (target.generated && target.generator) {
+    markdown.appendMarkdown(`### $(symbol-array) Generated target \`${target.name}\`\n\n`);
+    appendInfoSection(markdown);
+    appendFieldRows(markdown, [
+      {
+        label: "Origin",
+        value: `\`${formatLocation(root, target.generator.file, target.generator.range)}\``
+      },
+      {
+        label: "Template",
+        value: `\`${target.generator.templateName}\``
+      },
+      {
+        label: "Siblings",
+        value: (target.generator.generatedNamesPreview || []).length
+          ? target.generator.generatedNamesPreview.map((name) => commandLinkForTarget(index.targets.get(name)) || `\`${name}\``).join(", ")
+          : "`None`"
+      },
+      ...buildTargetOptionRows(target)
+    ]);
+    markdown.appendMarkdown(`\n**Bindings**\n${formatBindings(target.generator.bindings)}\n`);
+  } else {
+    markdown.appendMarkdown(`### $(symbol-field) Target \`${target.name}\`\n\n`);
+    appendInfoSection(markdown);
+    appendFieldRows(markdown, [
+      {
+        label: "Defined in",
+        value: `\`${formatLocation(root, target.file, target.nameRange)}\``
+      },
+      {
+        label: "Upstream",
+        value: formatTargetLinks(index, upstream)
+      },
+      {
+        label: "Downstream",
+        value: downstreamCount
+          ? commandLinkForTargetList(String(downstreamCount), `Downstream of ${target.name}`, downstreamTargets, root)
+          : "`0`"
+      },
+      ...buildTargetOptionRows(target)
+    ]);
+
+    if (index.partial) {
+      markdown.appendMarkdown(`\n> $(warning) Static analysis is partial.\n`);
+    }
+  }
+
+  return new vscode.Hover(markdown);
+}
+
 class TargetHoverProvider {
   constructor(indexManager) {
     this.indexManager = indexManager;
@@ -198,64 +259,7 @@ class TargetHoverProvider {
 
     const target = findTargetAtPosition(index, file, point);
     if (target) {
-      // Target hovers are the main navigation surface: show graph info and link
-      // related targets directly from the hover body.
-      const markdown = createMarkdown();
-      const upstream = [...(index.graph.downstreamToUpstream.get(target.name) || new Set())].sort();
-      const downstreamTargets = [...(index.graph.descendants.get(target.name) || new Set())]
-        .sort()
-        .map((targetName) => index.targets.get(targetName))
-        .filter(Boolean);
-      const downstreamCount = (index.graph.descendants.get(target.name) || new Set()).size;
-
-      if (target.generated && target.generator) {
-        markdown.appendMarkdown(`### $(symbol-array) Generated target \`${target.name}\`\n\n`);
-        appendInfoSection(markdown);
-        appendFieldRows(markdown, [
-          {
-            label: "Origin",
-            value: `\`${formatLocation(root, target.generator.file, target.generator.range)}\``
-          },
-          {
-            label: "Template",
-            value: `\`${target.generator.templateName}\``
-          },
-          {
-            label: "Siblings",
-            value: (target.generator.generatedNamesPreview || []).length
-              ? target.generator.generatedNamesPreview.map((name) => commandLinkForTarget(index.targets.get(name)) || `\`${name}\``).join(", ")
-              : "`None`"
-          },
-          ...buildTargetOptionRows(target)
-        ]);
-        markdown.appendMarkdown(`\n**Bindings**\n${formatBindings(target.generator.bindings)}\n`);
-      } else {
-        markdown.appendMarkdown(`### $(symbol-field) Target \`${target.name}\`\n\n`);
-        appendInfoSection(markdown);
-        appendFieldRows(markdown, [
-          {
-            label: "Defined in",
-            value: `\`${formatLocation(root, target.file, target.nameRange)}\``
-          },
-          {
-            label: "Upstream",
-            value: formatTargetLinks(index, upstream)
-          },
-          {
-            label: "Downstream",
-            value: downstreamCount
-              ? commandLinkForTargetList(String(downstreamCount), `Downstream of ${target.name}`, downstreamTargets, root)
-              : "`0`"
-          },
-          ...buildTargetOptionRows(target)
-        ]);
-
-        if (index.partial) {
-          markdown.appendMarkdown(`\n> $(warning) Static analysis is partial.\n`);
-        }
-      }
-
-      return new vscode.Hover(markdown);
+      return buildTargetHover(index, root, target);
     }
 
     const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z.][A-Za-z0-9._]*/);
@@ -263,6 +267,10 @@ class TargetHoverProvider {
     if (record && wordRange) {
       const symbol = document.getText(wordRange);
       const value = record.exportedSymbols.get(symbol);
+      if (value && value.kind === "TargetObject" && value.target) {
+        return buildTargetHover(index, root, value.target);
+      }
+
       const containedTargets = flattenTargetsFromValue(value);
       if (containedTargets.length) {
         const markdown = createMarkdown();
