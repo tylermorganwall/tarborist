@@ -9,10 +9,11 @@ const test = require("node:test");
 const { buildStaticWorkspaceIndex } = require("../../src/index/pipelineResolver");
 const { ensureParserReady, parseText } = require("../../src/parser/treeSitter");
 
-function buildIndex(fixtureName) {
+function buildIndex(fixtureName, options = {}) {
   // Each fixture directory acts like a tiny standalone targets project.
   const root = path.resolve(__dirname, "..", "fixtures", fixtureName);
   return buildStaticWorkspaceIndex({
+    ...options,
     readFile: (file) => fs.readFileSync(file, "utf8"),
     workspaceRoot: root
   });
@@ -159,6 +160,19 @@ test("indexes tar_select_targets() with tidyselect operators", () => {
   const index = buildIndex("tar_select_targets");
 
   assert.deepEqual([...index.targets.keys()], ["alpha", "gamma"]);
+});
+
+test("indexes configured additional single-target factories", () => {
+  const index = buildIndex("additional_target_factories", {
+    additionalSingleTargetFactories: ["tar_qs", "tar_parquet"]
+  });
+
+  assert.equal(index.partial, false);
+  assert.deepEqual([...index.targets.keys()], ["a", "b", "c", "d"]);
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "b" && ref.targetName === "a"));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "c" && ref.targetName === "a"));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "c" && ref.targetName === "b"));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "d" && ref.targetName === "c"));
 });
 
 test("scans tar_quarto() documents for tar_read()/tar_load() dependencies", () => {

@@ -29,6 +29,7 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - Indexes `tar_combine()` upstream target arguments
 - Indexes `tar_quarto()` targets and scans referenced `.qmd` / `.Rmd` files for `tar_read()` and `tar_load()`
 - Expands a supported static subset of `tar_map()`
+- Can opt into additional `tar_target()`-like single-target factories through the `tarborist.additionalSingleTargetFactories` setting
 - Builds a provisional dependency graph
 - Adds cycle diagnostics for statically detected cycles
 - Provides target-aware hover, Go to Definition, Ctrl-click navigation, and import document links
@@ -44,6 +45,7 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - `tar_combine(...)`
 - `tar_quarto(...)` with static scanning of referenced `.qmd` / `.Rmd` files
 - `tar_map(...)` in a supported static subset
+- user-configured single-target factories that follow the same `name` / `command` / `pattern` shape as `tar_target()`
 - `source("file.R")`, `base::source(...)`
 - `tar_source("R")`, `tar_source(files = c(...))`
 - target objects assigned to symbols and later included in `list(...)`
@@ -59,6 +61,10 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - fully resolve dynamic `tar_source()` paths or computed `tar_map()` values
 
 When static analysis can only recover part of the pipeline, `tarborist` degrades gracefully and marks the index as partial.
+
+## Optional settings
+
+- `tarborist.additionalSingleTargetFactories`: additional factory names to treat like `tar_target()` during static analysis. This is intended for single-target factories such as `tar_qs` or `tar_parquet`. Only use it for factories that create exactly one target and preserve the same `name` / `command` / `pattern` shape.
 
 ## Typical workflows
 

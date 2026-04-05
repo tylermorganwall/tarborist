@@ -55,6 +55,17 @@ class WorkspaceIndexManager {
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void this.refreshAll();
     }));
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration("tarborist.additionalSingleTargetFactories")) {
+        return;
+      }
+
+      if (this.outputChannel) {
+        this.outputChannel.appendLine("Updated tarborist.additionalSingleTargetFactories; refreshing pipeline indexes.");
+      }
+
+      void this.refreshAll();
+    }));
 
     await this.refreshAll();
   }
@@ -108,6 +119,15 @@ class WorkspaceIndexManager {
     return fs.readFileSync(normalized, "utf8");
   }
 
+  getResolverOptions() {
+    const config = vscode.workspace.getConfiguration("tarborist");
+    const configuredFactories = config.get("additionalSingleTargetFactories", []);
+
+    return {
+      additionalSingleTargetFactories: Array.isArray(configuredFactories) ? configuredFactories : []
+    };
+  }
+
   async refreshAll() {
     const refreshes = [];
     for (const folder of vscode.workspace.workspaceFolders || []) {
@@ -159,6 +179,7 @@ class WorkspaceIndexManager {
 
         // Every refresh rebuilds a single pipeline rooted at the nearest _targets.R.
         const index = buildStaticWorkspaceIndex({
+          ...this.getResolverOptions(),
           readFile: (file) => this.readFile(file),
           workspaceRoot: root
         });

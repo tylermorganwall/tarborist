@@ -5,7 +5,7 @@
   "description": "Static analysis for navigating and debugging complex R targets pipelines",
   "icon": "tarborist.png",
   "license": "GPL-3.0-or-later",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/tylermorganwall/tarborist.git"
@@ -26,6 +26,19 @@
   ],
   "main": "./src/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "tarborist",
+      "properties": {
+        "tarborist.additionalSingleTargetFactories": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "Additional `tar_target()`-like factory names to treat as single-target factories during static analysis. Use this only for factories that create exactly one target and follow the same `name` / `command` / `pattern` shape as `tar_target()`, for example `tar_qs` or `tar_parquet`."
+        }
+      }
+    },
     "commands": [
       {
         "command": "tarborist.refreshIndex",

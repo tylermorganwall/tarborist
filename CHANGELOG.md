@@ -1,11 +1,11 @@
 # Changelog
 
-## [0.2.2] - 2026-04-05
+## [0.3.0] - 2026-04-05
 
 ### Added
 
 - Static support for `tar_assign()` targets defined with supported native-pipe `tar_target()` forms, including `expr |> tar_target()` and `expr |> tar_target(command = _)`.
-- GitHub Actions release automation that runs tests, builds a VSIX, creates or updates a GitHub release on version tags, and publishes tagged releases to Open VSX when `OPEN_VSX_TOKEN` is configured.
+- Optional support for additional user-configured single-target `tar_target()`-like factories through the `tarborist.additionalSingleTargetFactories` setting.
 
 ### Changed
 

@@ -6,6 +6,8 @@ const DIRECT_TARGET_CALLS = new Set([
   "targets::tar_target"
 ]);
 
+const DIRECT_TARGET_CALL_NAME_PATTERN = /^[A-Za-z.][A-Za-z0-9._]*(::[A-Za-z.][A-Za-z0-9._]*)?$/;
+
 const MAP_CALLS = new Set([
   "tar_map",
   "tarchetypes::tar_map"
@@ -73,9 +75,29 @@ const TAR_MAP_CONTROL_ARGUMENTS = new Set([
   "delimiter"
 ]);
 
+function createDirectTargetCalls(additionalCallNames = []) {
+  const names = new Set(DIRECT_TARGET_CALLS);
+
+  for (const value of additionalCallNames || []) {
+    if (typeof value !== "string") {
+      continue;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed || !DIRECT_TARGET_CALL_NAME_PATTERN.test(trimmed)) {
+      continue;
+    }
+
+    names.add(trimmed);
+  }
+
+  return names;
+}
+
 module.exports = {
   ASSIGN_CALLS,
   COMBINE_CALLS,
+  createDirectTargetCalls,
   DIRECT_TARGET_CALLS,
   IMPORT_CALLS,
   MAP_CALLS,

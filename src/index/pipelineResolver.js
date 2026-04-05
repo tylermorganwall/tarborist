@@ -20,7 +20,7 @@ const {
 const {
   ASSIGN_CALLS,
   COMBINE_CALLS,
-  DIRECT_TARGET_CALLS,
+  createDirectTargetCalls,
   MAP_CALLS,
   QUARTO_CALLS,
   SELECT_TARGETS_CALLS,
@@ -340,7 +340,7 @@ function resolvePipedTargetFactoryCall(node, env, state, file, forcedName = null
     return null;
   }
 
-  if (!matchesCall(pipe.rhs, DIRECT_TARGET_CALLS)) {
+  if (!matchesCall(pipe.rhs, state.callSets.directTargetCalls)) {
     return makeUnknown(
       file,
       rangeFromNode(node),
@@ -382,7 +382,7 @@ function resolveTargetFactoryCall(node, env, state, file, forcedName = null, for
     return makeUnknown(file, rangeFromNode(current || node), "Static pipeline analysis is partial: unsupported expression in pipeline");
   }
 
-  if (matchesCall(current, DIRECT_TARGET_CALLS)) {
+  if (matchesCall(current, state.callSets.directTargetCalls)) {
     const parsed = parseTarTargetCall(current, file, {
       nameNodeOverride: forcedNameNode,
       nameOverride: forcedName,
@@ -915,6 +915,9 @@ function buildStaticWorkspaceIndex(options) {
   }
 
   const state = {
+    callSets: {
+      directTargetCalls: createDirectTargetCalls(options.additionalSingleTargetFactories)
+    },
     files: new Map(),
     generators: [],
     inProgress: new Set(),
