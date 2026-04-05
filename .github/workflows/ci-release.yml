@@ -69,7 +69,7 @@ jobs:
           if-no-files-found: error
 
   publish-release:
-    name: Publish GitHub release
+    name: Publish GitHub release and Open VSX
     runs-on: ubuntu-latest
     needs: build-vsix
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -112,3 +112,10 @@ jobs:
               --generate-notes \
               --title "tarborist ${TAG}"
           fi
+
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OPEN_VSX_TOKEN }}
+        run: |
+          VSIX_NAME="${{ needs.build-vsix.outputs.vsix_name }}"
+          npx --yes ovsx publish "${VSIX_NAME}" -p "${OVSX_PAT}"
