@@ -24,6 +24,10 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - Parses `_targets.R` and imported files with Tree-sitter
 - Resolves `source()` and `tar_source()` imports in a safe static subset
 - Indexes direct `tar_target()` definitions
+- Indexes `tar_assign()` target lists, including supported native-pipe `tar_target()` forms
+- Indexes `tar_select_targets()` in a supported static tidyselect subset
+- Indexes `tar_combine()` upstream target arguments
+- Indexes `tar_quarto()` targets and scans referenced `.qmd` / `.Rmd` files for `tar_read()` and `tar_load()`
 - Expands a supported static subset of `tar_map()`
 - Builds a provisional dependency graph
 - Adds cycle diagnostics for statically detected cycles
@@ -31,14 +35,21 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - Provides pipeline-scoped autocomplete only in valid `targets` regions
 - Shows upstream/downstream info, cue settings, and parallel-related target options in hover text
 
-## Supported static patterns
+## Currently supported workflows
 
 - `tar_target(...)`
+- `tar_assign({ ... })`
+- `tar_assign()` targets written as `x <- expr |> tar_target()` or `x <- expr |> tar_target(command = _)`
+- `tar_select_targets(...)` with a supported tidyselect subset
+- `tar_combine(...)`
+- `tar_quarto(...)` with static scanning of referenced `.qmd` / `.Rmd` files
+- `tar_map(...)` in a supported static subset
 - `source("file.R")`, `base::source(...)`
 - `tar_source("R")`, `tar_source(files = c(...))`
 - target objects assigned to symbols and later included in `list(...)`
 - sourced partial pipelines
-- statically resolvable `tar_map(values = ...)`
+- static target lists built from `list(...)`
+- static target references from bare symbols, `tar_read(...)`, `tar_load(...)`, and raw-string variants when statically obvious
 
 ## What it does not do
 
@@ -58,11 +69,15 @@ When static analysis can only recover part of the pipeline, `tarborist` degrades
 
 ## Install in Positron or VS Code
 
-### From a VSIX
+### From a GitHub release or registry
+
+If a release is available, install `tarborist` from the Open VSX-compatible registry your editor uses, or download the `.vsix` asset from the GitHub release and install it with `Extensions: Install from VSIX...`.
+
+### Build a VSIX locally
 
 ```sh
 npm install
-./node_modules/.bin/vsce package --allow-missing-repository
+./node_modules/.bin/vsce package
 ```
 
 Then install the generated `.vsix` with `Extensions: Install from VSIX...`.
@@ -75,6 +90,7 @@ See `examples/demo_pipeline/_targets.R` for a small pipeline that demonstrates:
 - sourced partial pipelines from `source()`
 - imported helpers and target objects from `tar_source()`
 - static `tar_map()` expansion and generated-target hover
+- `tar_assign()` and `tar_combine()` target composition
 - cue and parallel option display in hover
 - document links for imports
 - a commented cycle demo you can enable to test diagnostics
@@ -84,5 +100,5 @@ See `examples/demo_pipeline/_targets.R` for a small pipeline that demonstrates:
 ```sh
 npm install
 npm test
-./node_modules/.bin/vsce package --allow-missing-repository
+./node_modules/.bin/vsce package
 ```
