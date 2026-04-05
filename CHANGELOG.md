@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.2] - 2026-04-05
+
+### Added
+
+- Static support for `tar_assign()` targets defined with supported native-pipe `tar_target()` forms, including `expr |> tar_target()` and `expr |> tar_target(command = _)`.
+- GitHub Actions release automation that runs tests, builds a VSIX, creates or updates a GitHub release on version tags, and publishes tagged releases to Open VSX when `OPEN_VSX_TOKEN` is configured.
+
+### Changed
+
+- README installation and supported-workflow documentation now reflects the current release flow and the currently supported `targets` / `tarchetypes` patterns.
+
 ## [0.2.0] - 2026-04-03
 
 ### Added
