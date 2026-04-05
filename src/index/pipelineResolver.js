@@ -79,6 +79,15 @@ function unwrapExpressionNode(node) {
   return node.type === "braced_expression" ? node : unwrapNode(node);
 }
 
+function getBinaryOperatorText(node) {
+  if (!node || node.type !== "binary_operator") {
+    return null;
+  }
+
+  const operator = node.childForFieldName ? node.childForFieldName("operator") : null;
+  return operator ? operator.text : (node.children || []).find((child) => child.type === "|>" || child.text === "|>")?.text || null;
+}
+
 function getLocalAssignmentParts(node) {
   if (!node || node.type !== "binary_operator") {
     return null;
@@ -114,6 +123,27 @@ function getLocalAssignmentParts(node) {
   }
 
   return null;
+}
+
+function getNativePipeParts(node) {
+  if (!node || node.type !== "binary_operator" || getBinaryOperatorText(node) !== "|>") {
+    return null;
+  }
+
+  const lhs = node.childForFieldName ? node.childForFieldName("lhs") : null;
+  const rhs = node.childForFieldName ? node.childForFieldName("rhs") : null;
+  if (!lhs || !rhs) {
+    return null;
+  }
+
+  return {
+    lhs: unwrapExpressionNode(lhs),
+    rhs: unwrapNode(rhs)
+  };
+}
+
+function isPlaceholderIdentifier(node) {
+  return Boolean(node && unwrapNode(node) && unwrapNode(node).type === "identifier" && unwrapNode(node).text === "_");
 }
 
 function resolveFactoryName(callNode, forcedName, forcedNameNode) {
@@ -300,9 +330,55 @@ function resolveTarCombineCall(callNode, env, state, file, forcedName = null, fo
   return makeTargetObject(target);
 }
 
+function resolvePipedTargetFactoryCall(node, env, state, file, forcedName = null, forcedNameNode = null) {
+  if (!forcedName) {
+    return null;
+  }
+
+  const pipe = getNativePipeParts(node);
+  if (!pipe || !pipe.rhs || pipe.rhs.type !== "call") {
+    return null;
+  }
+
+  if (!matchesCall(pipe.rhs, DIRECT_TARGET_CALLS)) {
+    return makeUnknown(
+      file,
+      rangeFromNode(node),
+      "Static pipeline analysis is partial: tar_assign() piped expressions must end in tar_target()"
+    );
+  }
+
+  const commandArgument = getNamedArgument(pipe.rhs, "command") || getPositionalArgument(pipe.rhs, 0);
+  if (commandArgument && !isPlaceholderIdentifier(getArgumentValue(commandArgument.node))) {
+    return makeUnknown(
+      file,
+      rangeFromNode(commandArgument.value || pipe.rhs),
+      "Static pipeline analysis is partial: tar_assign() piped tar_target() must use an empty command or command = _"
+    );
+  }
+
+  const parsed = parseTarTargetCall(pipe.rhs, file, {
+    commandNodeOverride: pipe.lhs,
+    nameNodeOverride: forcedNameNode,
+    nameOverride: forcedName,
+    origin: "tar_target"
+  });
+
+  if (!parsed.ok) {
+    return makeUnknown(file, rangeFromNode(node), `Static pipeline analysis is partial: ${parsed.reason}`);
+  }
+
+  return makeTargetObject(parsed.target);
+}
+
 function resolveTargetFactoryCall(node, env, state, file, forcedName = null, forcedNameNode = null) {
   const current = unwrapNode(node);
   if (!current || current.type !== "call") {
+    const piped = resolvePipedTargetFactoryCall(current, env, state, file, forcedName, forcedNameNode);
+    if (piped) {
+      return piped;
+    }
+
     return makeUnknown(file, rangeFromNode(current || node), "Static pipeline analysis is partial: unsupported expression in pipeline");
   }
 

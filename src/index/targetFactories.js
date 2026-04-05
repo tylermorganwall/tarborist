@@ -88,10 +88,13 @@ function createTargetDefinition(file, callNode, options) {
 }
 
 function parseTarTargetCall(callNode, file, options = {}) {
-  const nameArgument = getNamedArgument(callNode, "name") || getPositionalArgument(callNode, 0);
-  const commandArgument = getNamedArgument(callNode, "command") || getPositionalArgument(callNode, 1);
+  const explicitNameArgument = getNamedArgument(callNode, "name");
+  const implicitNameArgument = explicitNameArgument ? null : getPositionalArgument(callNode, 0);
+  const nameArgument = explicitNameArgument || implicitNameArgument;
+  const hasAssignedName = Boolean(options.nameOverride && !explicitNameArgument);
+  const commandArgument = getNamedArgument(callNode, "command") || getPositionalArgument(callNode, hasAssignedName ? 0 : 1);
   const patternArgument = getNamedArgument(callNode, "pattern");
-  const rawCommandNode = commandArgument ? getArgumentValue(commandArgument.node) : null;
+  const rawCommandNode = options.commandNodeOverride || (commandArgument ? getArgumentValue(commandArgument.node) : null);
   const rawPatternNode = patternArgument ? getArgumentValue(patternArgument.node) : null;
 
   if ((!nameArgument || !nameArgument.value) && !options.nameOverride) {
@@ -101,7 +104,7 @@ function parseTarTargetCall(callNode, file, options = {}) {
     };
   }
 
-  if (!commandArgument || !rawCommandNode) {
+  if (!rawCommandNode) {
     return {
       ok: false,
       reason: "Could not statically resolve tar_target() arguments"

@@ -143,6 +143,18 @@ test("indexes tar_assign() blocks as target lists", () => {
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "gamma" && ref.targetName === "beta"));
 });
 
+test("indexes tar_assign() targets defined with native-pipe tar_target() forms", () => {
+  const index = buildIndex("tar_assign_pipe");
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+
+  assert.equal(index.partial, false);
+  assert.deepEqual([...index.targets.keys()], ["alpha", "beta", "gamma", "delta"]);
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "beta" && ref.targetName === "alpha"));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "gamma" && ref.targetName === "alpha"));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "delta" && ref.targetName === "gamma"));
+  assert.ok(!diagnostics.some((diagnostic) => diagnostic.message.includes("tar_assign()")));
+});
+
 test("indexes tar_select_targets() with tidyselect operators", () => {
   const index = buildIndex("tar_select_targets");
 
