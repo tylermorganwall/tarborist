@@ -109,7 +109,10 @@ function collectQuartoRefsFromCode(code, file, lineMap) {
   }
 
   const refs = [];
-  const tree = parseText(code);
+  const tree = parseText(code, {
+    file,
+    phase: "scanQuartoRChunks"
+  });
   walkNamed(tree.rootNode, (node) => {
     if (node.type !== "call") {
       return;

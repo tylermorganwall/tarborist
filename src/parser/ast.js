@@ -205,6 +205,63 @@ function getAssignmentParts(node) {
   };
 }
 
+function getTableColumnAssignmentParts(node) {
+  if (!node || node.type !== "binary_operator") {
+    return null;
+  }
+
+  const lhs = node.childForFieldName ? node.childForFieldName("lhs") : null;
+  const rhs = node.childForFieldName ? node.childForFieldName("rhs") : null;
+  const operator = node.childForFieldName ? node.childForFieldName("operator") : null;
+  const operatorText = operator ? operator.text : (node.children || []).find((child) => child.text === "<-" || child.text === "=")?.text;
+
+  if (!lhs || !rhs || !operatorText || (operatorText !== "<-" && operatorText !== "=")) {
+    return null;
+  }
+
+  const target = unwrapNode(lhs);
+  if (!target || (target.type !== "subset2" && target.type !== "subset" && target.type !== "extract_operator")) {
+    return null;
+  }
+
+  const tableNode = target.namedChildren && target.namedChildren.length ? unwrapNode(target.namedChildren[0]) : null;
+  let indexNode = null;
+  if (target.type === "extract_operator") {
+    indexNode = target.namedChildren && target.namedChildren.length > 1 ? unwrapNode(target.namedChildren[1]) : null;
+  } else {
+    const argumentsNode = (target.namedChildren || []).find((child) => child.type === "arguments");
+    const argumentNode = argumentsNode && argumentsNode.namedChildren
+      ? argumentsNode.namedChildren.find((child) => child.type === "argument")
+      : null;
+    indexNode = argumentNode ? unwrapNode(getArgumentValue(argumentNode)) : null;
+  }
+
+  if (!tableNode || tableNode.type !== "identifier" || !indexNode) {
+    return null;
+  }
+
+  if (indexNode.type === "identifier") {
+    return {
+      columnName: indexNode.text,
+      operator: operatorText,
+      rhs: unwrapNode(rhs),
+      symbol: tableNode.text
+    };
+  }
+
+  if (isStringNode(indexNode)) {
+    const columnName = getStringValue(indexNode);
+    return columnName ? {
+      columnName,
+      operator: operatorText,
+      rhs: unwrapNode(rhs),
+      symbol: tableNode.text
+    } : null;
+  }
+
+  return null;
+}
+
 function walkNamed(node, visitor) {
   if (!node) {
     return;
@@ -270,6 +327,7 @@ module.exports = {
   isImportCall,
   isStringNode,
   matchesCall,
+  getTableColumnAssignmentParts,
   unpackArguments,
   unwrapNode,
   walkNamed

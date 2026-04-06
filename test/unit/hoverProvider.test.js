@@ -152,3 +152,108 @@ test("hovering a tar_combine() alias outside target code uses the target hover",
   assert.match(markdown, /`second`/);
   assert.doesNotMatch(markdown, /Pipeline object `combined`/);
 });
+
+test("hover shows runtime metadata from _targets/meta/meta", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("meta_hover");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(x, 1)"));
+  const position = { line: lineIndex, character: text.split("\n")[lineIndex].indexOf("x") };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const now = Date.parse("2026-04-06T12:00:00.000Z");
+  const targetTime = Date.parse("2025-10-10T15:56:12.925Z");
+  const elapsedDays = Math.floor((now - targetTime) / (24 * 60 * 60 * 1000));
+  const originalDateNow = Date.now;
+  Date.now = () => now;
+  let hover;
+  try {
+    hover = await provider.provideHover(document, position);
+  } finally {
+    Date.now = originalDateNow;
+  }
+  const markdown = hover.contents[0].value;
+
+  assert.match(markdown, new RegExp(`${elapsedDays} days ago, 2025-10-10 15:56:12\\.925 UTC`));
+  assert.match(markdown, /warning \+ error/);
+  assert.match(markdown, /4\.42 KB \(4521 B\)/);
+  assert.match(markdown, /\*\*Warnings\*\*/);
+  assert.match(markdown, /warning text/);
+  assert.match(markdown, /\*\*Error\*\*/);
+  assert.match(markdown, /error text/);
+});
+
+test("hover shows not built yet when a meta row exists without a timestamp", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("meta_hover");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(y, x + 1)"));
+  const position = { line: lineIndex, character: text.split("\n")[lineIndex].indexOf("y") };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+  const markdown = hover.contents[0].value;
+
+  assert.match(markdown, /\| \*\*Updated\*\* \| `not built yet` \|/);
+  assert.match(markdown, /\| \*\*Status\*\* \| `clean` \|/);
+  assert.match(markdown, /\| \*\*Size\*\* \| `128 B` \|/);
+});
+
+test("downstream quick-pick payload includes relative update age before the location", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("meta_hover");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(x, 1)"));
+  const position = { line: lineIndex, character: text.split("\n")[lineIndex].indexOf("x") };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const now = Date.parse("2026-04-06T12:00:00.000Z");
+  const targetTime = Date.parse("2025-10-10T15:56:12.925Z");
+  const elapsedDays = Math.floor((now - targetTime) / (24 * 60 * 60 * 1000));
+  const originalDateNow = Date.now;
+  Date.now = () => now;
+  let hover;
+  try {
+    hover = await provider.provideHover(document, position);
+  } finally {
+    Date.now = originalDateNow;
+  }
+
+  const markdown = hover.contents[0].value;
+  const commandPrefix = "command:tarborist.showTargetList?";
+  const commandStart = markdown.indexOf(commandPrefix);
+  assert.notEqual(commandStart, -1, "expected a downstream quick-pick command link in the hover");
+
+  const payloadStart = commandStart + commandPrefix.length;
+  const payloadEnd = markdown.indexOf(") |", payloadStart);
+  const [payload] = JSON.parse(decodeURIComponent(markdown.slice(payloadStart, payloadEnd)));
+  assert.equal(payload.targets[0].name, "y");
+  assert.match(payload.targets[0].description, /^_targets\.R:3 \(not built yet\)$/);
+});

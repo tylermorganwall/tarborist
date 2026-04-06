@@ -35,7 +35,9 @@ const { analyzeFile } = require("./fileRecord");
 const { buildPipelineGraph } = require("./graph");
 const { resolveFilePathExpression, resolveImportCall } = require("./importResolver");
 const { scanQuartoDependencyRefs } = require("./quartoScanner");
+const { assignStaticTableColumn, resolveStaticTableExpression } = require("./staticTable");
 const { expandTarMap } = require("./tarMapExpander");
+const { readTargetsMeta } = require("./targetsMeta");
 const { evaluateTidyselectNode } = require("./tidyselect");
 const { createTargetDefinition, extractTargetName, extractTargetOptions, parseTarTargetCall } = require("./targetFactories");
 
@@ -61,6 +63,33 @@ function makeTargetObject(target) {
     kind: "TargetObject",
     target
   };
+}
+
+function makeStaticTable(rows) {
+  return {
+    kind: "StaticTable",
+    rows
+  };
+}
+
+function collectConcreteTargets(value) {
+  if (!value) {
+    return [];
+  }
+
+  if (value.kind === "TargetObject") {
+    return [value.target];
+  }
+
+  if (value.kind === "StaticMap") {
+    return value.targets.slice();
+  }
+
+  if (value.kind === "TargetList") {
+    return value.items.flatMap((item) => collectConcreteTargets(item));
+  }
+
+  return [];
 }
 
 function addDiagnostic(state, file, range, severity, message) {
@@ -142,6 +171,92 @@ function getNativePipeParts(node) {
   };
 }
 
+function getSubsetParts(node) {
+  if (!node || (node.type !== "subset2" && node.type !== "subset")) {
+    return null;
+  }
+
+  const targetNode = node.namedChildren && node.namedChildren.length ? node.namedChildren[0] : null;
+  const argumentsNode = (node.namedChildren || []).find((child) => child.type === "arguments");
+  const argumentNode = argumentsNode && argumentsNode.namedChildren
+    ? argumentsNode.namedChildren.find((child) => child.type === "argument")
+    : null;
+  const indexNode = argumentNode ? unwrapNode(getArgumentValue(argumentNode)) : null;
+
+  if (!targetNode || !indexNode) {
+    return null;
+  }
+
+  return {
+    indexNode,
+    targetNode: unwrapExpressionNode(targetNode)
+  };
+}
+
+function readSubsetIndex(node) {
+  const current = unwrapNode(node);
+  if (!current) {
+    return null;
+  }
+
+  if (isStringNode(current)) {
+    return {
+      type: "string",
+      value: getStringValue(current)
+    };
+  }
+
+  if (current.type === "float" && /^\d+$/.test(current.text)) {
+    return {
+      type: "index",
+      value: Number(current.text)
+    };
+  }
+
+  return null;
+}
+
+function resolveSubsetValue(node, env, state, file) {
+  const parts = getSubsetParts(node);
+  if (!parts) {
+    return makeUnknown(file, rangeFromNode(node), "Static pipeline analysis is partial: unsupported expression in pipeline");
+  }
+
+  const containerValue = resolveTopLevelValue(parts.targetNode, env, state, file);
+  const concreteTargets = collectConcreteTargets(containerValue);
+  const indexValue = readSubsetIndex(parts.indexNode);
+
+  if (!indexValue) {
+    return makeUnknown(
+      file,
+      rangeFromNode(parts.indexNode),
+      "Static pipeline analysis is partial: could not statically resolve list subset expression"
+    );
+  }
+
+  if (indexValue.type === "string") {
+    const matchedTarget = concreteTargets.find((target) => target.name === indexValue.value);
+    return matchedTarget
+      ? makeTargetObject(matchedTarget)
+      : makeUnknown(
+        file,
+        rangeFromNode(parts.indexNode),
+        `Static pipeline analysis is partial: could not resolve pipeline target '${indexValue.value}' in list subset`
+      );
+  }
+
+  const offset = indexValue.value - 1;
+  if (offset >= 0 && offset < concreteTargets.length) {
+    return makeTargetObject(concreteTargets[offset]);
+  }
+
+  return makeUnknown(
+    file,
+    rangeFromNode(parts.indexNode),
+    `Static pipeline analysis is partial: list subset index ${indexValue.value} is out of bounds`
+  );
+}
+
 function isPlaceholderIdentifier(node) {
   return Boolean(node && unwrapNode(node) && unwrapNode(node).type === "identifier" && unwrapNode(node).text === "_");
 }
@@ -164,7 +279,9 @@ function resolveTarAssignCall(callNode, env, state, file) {
   }
 
   const body = unwrapExpressionNode(rawBodyNode);
-  const statements = body && body.type === "braced_expression" ? body.namedChildren || [] : [body];
+  const statements = body && body.type === "braced_expression"
+    ? (body.namedChildren || []).filter((child) => child.type !== "comment")
+    : [body];
   const localEnv = new Map(env);
   const items = [];
 
@@ -405,7 +522,7 @@ function resolveTargetFactoryCall(node, env, state, file, forcedName = null, for
   }
 
   if (matchesCall(current, MAP_CALLS)) {
-    const expanded = expandTarMap(current, file);
+    const expanded = expandTarMap(current, file, env);
     for (const diagnostic of expanded.diagnostics || []) {
       addDiagnostic(state, file, diagnostic.range, diagnostic.severity, diagnostic.message);
     }
@@ -452,8 +569,17 @@ function resolveTopLevelValue(node, env, state, file) {
     return makeTargetList([]);
   }
 
+  if (current.type === "subset2" || current.type === "subset") {
+    return resolveSubsetValue(current, env, state, file);
+  }
+
   if (current.type !== "call") {
     return makeUnknown(file, rangeFromNode(current), "Static pipeline analysis is partial: unsupported expression in pipeline");
+  }
+
+  const staticTable = resolveStaticTableExpression(current, env);
+  if (staticTable) {
+    return makeStaticTable(staticTable.rows);
   }
 
   return resolveTargetFactoryCall(current, env, state, file);
@@ -799,6 +925,15 @@ function executeFile(file, state) {
       continue;
     }
 
+    if (statement.kind === "columnAssignment") {
+      const existingValue = env.get(statement.symbol);
+      const updatedValue = assignStaticTableColumn(existingValue, statement.columnName, statement.valueNode);
+      if (updatedValue) {
+        env.set(statement.symbol, makeStaticTable(updatedValue.rows));
+      }
+      continue;
+    }
+
     if (statement.kind === "import") {
       const resolution = resolveImportCall(statement.node, normalizedFile);
       record.importLinks.push(...resolution.links);
@@ -907,6 +1042,7 @@ function buildStaticWorkspaceIndex(options) {
     partial: false,
     refs: [],
     rootFile,
+    targetsMeta: new Map(),
     targets: new Map()
   };
 
@@ -970,6 +1106,7 @@ function buildStaticWorkspaceIndex(options) {
     partial: state.partial,
     refs,
     rootFile,
+    targetsMeta: readTargetsMeta(workspaceRoot, options.readFile),
     targets
   };
 }

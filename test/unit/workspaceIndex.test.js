@@ -106,6 +106,65 @@ test("expands statically resolvable tar_map calls", () => {
   assert.equal(index.generators[0].count, 4);
 });
 
+test("expands tar_map() values resolved from static expand.grid()/expand_grid() and bind_rows() helpers", () => {
+  const index = buildIndex("tar_map_static_tables");
+
+  assert.equal(index.partial, false);
+  assert.deepEqual(
+    [...index.targets.keys()],
+    [
+      "fit_penguins_adelie_basic",
+      "report_penguins_adelie_basic",
+      "fit_penguins_gentoo_basic",
+      "report_penguins_gentoo_basic",
+      "fit_penguins_chinstrap_extra",
+      "report_penguins_chinstrap_extra"
+    ]
+  );
+
+  const generated = index.targets.get("fit_penguins_chinstrap_extra");
+  assert.equal(generated.generated, true);
+  assert.equal(generated.generator.templateName, "fit_penguins");
+  assert.equal(generated.generator.bindings.pipelines, "\"chinstrap_extra\"");
+  assert.equal(index.generators.length, 1);
+  assert.equal(index.generators[0].count, 6);
+  assert.ok(index.refs.some((ref) => ref.synthetic && ref.enclosingTarget === "report_penguins_chinstrap_extra" && ref.targetName === "fit_penguins_chinstrap_extra"));
+});
+
+test("expands tar_map() values resolved from static rbind() helpers", () => {
+  const index = buildIndex("tar_map_static_tables_rbind");
+
+  assert.equal(index.partial, false);
+  assert.deepEqual(
+    [...index.targets.keys()],
+    [
+      "fit_penguins_adelie_basic",
+      "report_penguins_adelie_basic",
+      "fit_penguins_gentoo_extra",
+      "report_penguins_gentoo_extra",
+      "fit_penguins_chinstrap_more",
+      "report_penguins_chinstrap_more"
+    ]
+  );
+
+  const generated = index.targets.get("fit_penguins_gentoo_extra");
+  assert.equal(generated.generated, true);
+  assert.equal(generated.generator.templateName, "fit_penguins");
+  assert.equal(generated.generator.bindings.pipelines, "\"gentoo_extra\"");
+  assert.equal(index.generators.length, 1);
+  assert.equal(index.generators[0].count, 6);
+  assert.ok(index.refs.some((ref) => ref.synthetic && ref.enclosingTarget === "report_penguins_gentoo_extra" && ref.targetName === "fit_penguins_gentoo_extra"));
+});
+
+test("resolves tar_map() outputs selected through list subsetting", () => {
+  const index = buildIndex("tar_map_subset");
+  const refs = index.refs.filter((ref) => ref.enclosingTarget === "summary_fit");
+
+  assert.equal(index.partial, false);
+  assert.deepEqual([...index.targets.keys()], ["fit_penguins_adelie", "summary_fit"]);
+  assert.deepEqual(refs.map((ref) => ref.targetName), ["fit_penguins_adelie"]);
+});
+
 test("does not create self-cycles for target-local shadowed variables", () => {
   const index = buildIndex("local_shadow");
   const refs = index.refs.filter((ref) => ref.enclosingTarget === "designs_gl_theta_tbl");
@@ -122,6 +181,28 @@ test("ignores NULL pipeline entries without marking the index partial", () => {
   assert.equal(index.partial, false);
   assert.deepEqual([...index.targets.keys()], ["a", "b"]);
   assert.ok(!diagnostics.some((diagnostic) => diagnostic.message.includes("unsupported expression in pipeline")));
+});
+
+test("ignores trailing comments after the final pipeline expression", () => {
+  const index = buildIndex("trailing_comment");
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+
+  assert.equal(index.partial, false);
+  assert.deepEqual([...index.targets.keys()], ["x"]);
+  assert.ok(!diagnostics.some((diagnostic) => diagnostic.message.includes("unsupported expression in pipeline")));
+});
+
+test("reads runtime metadata from _targets/meta/meta", () => {
+  const index = buildIndex("meta_hover");
+  const meta = index.targetsMeta.get("x");
+
+  assert.ok(meta);
+  assert.equal(meta.time, "2025-10-10 15:56:12.925 UTC");
+  assert.equal(meta.size, "4.42 KB (4521 B)");
+  assert.equal(meta.hasWarnings, true);
+  assert.equal(meta.hasError, true);
+  assert.equal(meta.warnings, "warning text");
+  assert.equal(meta.error, "error text");
 });
 
 test("captures cue and parallel target options verbatim", () => {
@@ -142,6 +223,16 @@ test("indexes tar_assign() blocks as target lists", () => {
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "beta" && ref.targetName === "alpha"));
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "gamma" && ref.targetName === "alpha"));
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "gamma" && ref.targetName === "beta"));
+});
+
+test("ignores comments inside tar_assign() blocks", () => {
+  const index = buildIndex("tar_assign_comments");
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+
+  assert.equal(index.partial, false);
+  assert.deepEqual([...index.targets.keys()], ["alpha", "beta"]);
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "beta" && ref.targetName === "alpha"));
+  assert.ok(!diagnostics.some((diagnostic) => diagnostic.message.includes("requires target factory assignments")));
 });
 
 test("indexes tar_assign() targets defined with native-pipe tar_target() forms", () => {

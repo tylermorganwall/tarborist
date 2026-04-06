@@ -4,9 +4,7 @@
 // template targets, and synthesize generated target definitions.
 const {
   getNamedArgument,
-  getPositionalArgument,
   getShortCallName,
-  getStringValue,
   isStringNode,
   matchesCall,
   unpackArguments,
@@ -14,212 +12,8 @@ const {
 } = require("../parser/ast");
 const { TAR_MAP_CONTROL_ARGUMENTS } = require("../parser/queries");
 const { rangeFromNode } = require("../util/ranges");
+const { resolveStaticTableRows } = require("./staticTable");
 const { parseTarTargetCall } = require("./targetFactories");
-
-function sanitizeNamePart(value) {
-  return String(value)
-    .trim()
-    .replace(/\s+/g, "_")
-    .replace(/[^A-Za-z0-9._]+/g, "_")
-    .replace(/^_+|_+$/g, "") || "value";
-}
-
-function bindingValueFromNode(node) {
-  // Capture both a printable preview and a sanitized name fragment for generated
-  // target names.
-  const current = unwrapNode(node);
-  if (!current) {
-    return null;
-  }
-
-  if (isStringNode(current)) {
-    const text = getStringValue(current);
-    return {
-      kind: "string",
-      node: current,
-      preview: text,
-      text: current.text,
-      namePart: sanitizeNamePart(text)
-    };
-  }
-
-  if (current.type === "identifier") {
-    return {
-      kind: "symbol",
-      node: current,
-      preview: current.text,
-      text: current.text,
-      namePart: sanitizeNamePart(current.text)
-    };
-  }
-
-  if (current.type === "integer" || current.type === "float" || current.type === "complex" || current.type === "true" || current.type === "false" || current.type === "null") {
-    return {
-      kind: "literal",
-      node: current,
-      preview: current.text,
-      text: current.text,
-      namePart: sanitizeNamePart(current.text)
-    };
-  }
-
-  if (current.type === "unary_operator") {
-    return {
-      kind: "expr",
-      node: current,
-      preview: current.text,
-      text: current.text,
-      namePart: sanitizeNamePart(current.text)
-    };
-  }
-
-  if (matchesCall(current, new Set(["quote"]))) {
-    const quoted = getPositionalArgument(current, 0);
-    if (!quoted || !quoted.value) {
-      return null;
-    }
-
-    return {
-      kind: "expr",
-      node: quoted.value,
-      preview: quoted.value.text,
-      text: quoted.value.text,
-      namePart: sanitizeNamePart(quoted.value.text)
-    };
-  }
-
-  return {
-    kind: "expr",
-    node: current,
-    preview: current.text,
-    text: current.text,
-    namePart: sanitizeNamePart(current.text)
-  };
-}
-
-function parseVectorValues(node) {
-  const current = unwrapNode(node);
-  if (!current) {
-    return null;
-  }
-
-  if (matchesCall(current, new Set(["c", "list"]))) {
-    const values = [];
-    for (const argument of unpackArguments(current)) {
-      const binding = bindingValueFromNode(argument.value);
-      if (!binding) {
-        return null;
-      }
-
-      values.push(binding);
-    }
-
-    return values;
-  }
-
-  const scalar = bindingValueFromNode(current);
-  return scalar ? [scalar] : null;
-}
-
-function buildRowsFromColumns(columns) {
-  const names = Object.keys(columns);
-  if (!names.length) {
-    return [];
-  }
-
-  const lengths = names.map((name) => columns[name].length);
-  const rowCount = Math.max(...lengths);
-  if (!Number.isFinite(rowCount) || rowCount < 1) {
-    return [];
-  }
-
-  for (const length of lengths) {
-    if (length !== 1 && length !== rowCount) {
-      return null;
-    }
-  }
-
-  const rows = [];
-  for (let index = 0; index < rowCount; index += 1) {
-    const row = {};
-    for (const name of names) {
-      const values = columns[name];
-      row[name] = values.length === 1 ? values[0] : values[index];
-    }
-    rows.push(row);
-  }
-
-  return rows;
-}
-
-function parseRowObject(node) {
-  const current = unwrapNode(node);
-  if (!matchesCall(current, new Set(["list"]))) {
-    return null;
-  }
-
-  const row = {};
-  for (const argument of unpackArguments(current)) {
-    if (!argument.name) {
-      return null;
-    }
-
-    const binding = bindingValueFromNode(argument.value);
-    if (!binding) {
-      return null;
-    }
-
-    row[argument.name] = binding;
-  }
-
-  return row;
-}
-
-function parseValuesRows(node) {
-  // Accept either column-oriented values (list(a = c(...))) or explicit row
-  // objects (list(list(a = 1), list(a = 2))).
-  const current = unwrapNode(node);
-  if (!current) {
-    return null;
-  }
-
-  if (matchesCall(current, new Set(["list", "data.frame", "tibble", "tibble::tibble"]))) {
-    const argumentsList = unpackArguments(current);
-    if (!argumentsList.length) {
-      return [];
-    }
-
-    if (argumentsList.every((argument) => Boolean(argument.name))) {
-      const columns = {};
-      for (const argument of argumentsList) {
-        const values = parseVectorValues(argument.value);
-        if (!values) {
-          return null;
-        }
-
-        columns[argument.name] = values;
-      }
-
-      return buildRowsFromColumns(columns);
-    }
-
-    if (argumentsList.every((argument) => !argument.name)) {
-      const rows = [];
-      for (const argument of argumentsList) {
-        const row = parseRowObject(argument.value);
-        if (!row) {
-          return null;
-        }
-
-        rows.push(row);
-      }
-
-      return rows;
-    }
-  }
-
-  return null;
-}
 
 function parseNameColumns(node, availableColumns) {
   const current = unwrapNode(node);
@@ -308,7 +102,11 @@ function collectTemplateTargets(node, file, generatorMeta, diagnostics) {
   return [];
 }
 
-function expandTarMap(callNode, file) {
+function resolveTarMapRows(node, env) {
+  return resolveStaticTableRows(node, env);
+}
+
+function expandTarMap(callNode, file, env = new Map()) {
   // Expand the generator without evaluating NSE: derive rows, generate names,
   // and attach binding metadata for hover/ref extraction later.
   const diagnostics = [];
@@ -329,7 +127,7 @@ function expandTarMap(callNode, file) {
     };
   }
 
-  const rows = parseValuesRows(valuesArgument.value);
+  const rows = resolveTarMapRows(valuesArgument.value, env);
   if (!rows) {
     diagnostics.push({
       range: rangeFromNode(valuesArgument.value),

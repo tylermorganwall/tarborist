@@ -1,15 +1,35 @@
 # Changelog
 
-## [0.3.0] - 2026-04-05
+## [0.4.0] - 2026-04-06
 
 ### Added
 
 - Static support for `tar_assign()` targets defined with supported native-pipe `tar_target()` forms, including `expr |> tar_target()` and `expr |> tar_target(command = _)`.
 - Optional support for additional user-configured single-target `tar_target()`-like factories through the `tarborist.additionalSingleTargetFactories` setting.
+- Runtime hover metadata from `_targets/meta/meta`, including last updated time, status, size, warnings, and errors.
+- Static support for selecting pipeline objects with `[[ ]]`, including selecting generated `tar_map()` targets into the final pipeline.
+- Static support for `tar_map(values = some_symbol, names = some_column, ...)` when `some_symbol` is built from a supported static table subset, including `tidyr::expand_grid()`, `expand.grid()`, `dplyr::bind_rows()`, `rbind()`, and top-level `$` / `[[ ]]` column assignment.
 
 ### Changed
 
 - README installation and supported-workflow documentation now reflects the current release flow and the currently supported `targets` / `tarchetypes` patterns.
+- Runtime hover metadata now shows relative update ages, uses `not built yet` when a meta row exists without a build timestamp, and includes build age in related-target quick-pick descriptions.
+
+### Fixed
+
+- Trailing comments after the final pipeline expression no longer replace the pipeline with an unsupported expression.
+- Comments inside `tar_assign({})` no longer trigger spurious `requires target factory assignments` warnings.
+
+## [0.3.0] - 2026-04-05
+
+### Added
+
+- Optional support for additional user-configured single-target `tar_target()`-like factories through the `tarborist.additionalSingleTargetFactories` setting.
+- Regression coverage for configured `tar_target()`-like factory aliases such as `tar_qs()` and `tar_parquet()`.
+
+### Changed
+
+- Workspace indexes now refresh when `tarborist.additionalSingleTargetFactories` changes, so newly configured factory aliases are picked up immediately.
 
 ## [0.2.0] - 2026-04-03
 

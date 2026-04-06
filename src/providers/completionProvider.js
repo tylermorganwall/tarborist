@@ -104,7 +104,10 @@ function findCallArgumentContext(node, position, callNames) {
 
 function determineInsertContext(document, position) {
   // Completions insert strings inside raw APIs and bare symbols everywhere else.
-  const tree = parseText(document.getText());
+  const tree = parseText(document.getText(), {
+    file: document.uri.fsPath,
+    phase: "completionProvider"
+  });
   const point = {
     character: position.character,
     line: position.line
@@ -222,92 +225,99 @@ class TargetCompletionProvider {
   }
 
   async provideCompletionItems(document, position) {
-    const index = await this.indexManager.getIndexForUri(document.uri);
-    if (!index) {
-      return [];
-    }
-
-    const file = normalizeFile(document.uri.fsPath);
-    const point = {
-      character: position.character,
-      line: position.line
-    };
-    const region = findCompletionRegion(index, file, point);
-    if (!region) {
-      return [];
-    }
-
-    const insertContext = determineInsertContext(document, position);
-    if (!insertContext) {
-      return [];
-    }
-
-    // Prevent the user from inserting the current target, any existing
-    // descendants, and any target already known to be cyclic.
-    const excluded = new Set(index.graph.cyclicTargets || []);
-    for (const targetName of region.enclosingTargets) {
-      excluded.add(targetName);
-      for (const descendant of index.graph.descendants.get(targetName) || []) {
-        excluded.add(descendant);
-      }
-    }
-
-    const distances = buildAncestorDistanceMap(index.graph, region.enclosingTargets);
-    const prefix = extractPrefix(document, position).toLowerCase();
-    const root = this.indexManager.getWorkspaceRoot(document.uri);
-    const items = [];
-    const templateItems = buildTemplateCompletionItems(index, region, {
-      distances,
-      excluded,
-      file,
-      insertContext,
-      prefix,
-      root
-    });
-
-    items.push(...templateItems.items);
-
-    for (const target of index.targets.values()) {
-      if (excluded.has(target.name)) {
-        continue;
+    try {
+      const index = await this.indexManager.getIndexForUri(document.uri);
+      if (!index) {
+        return [];
       }
 
-      // Inside tar_map() template code, sibling mapped targets are completed by
-      // their template names rather than by the generated names from each row.
-      if (templateItems.coveredGeneratedTargets.has(target.name)) {
-        continue;
+      const file = normalizeFile(document.uri.fsPath);
+      const point = {
+        character: position.character,
+        line: position.line
+      };
+      const region = findCompletionRegion(index, file, point);
+      if (!region) {
+        return [];
       }
 
-      const prefixScore = prefixScoreForName(target.name, prefix);
-      const sameFileScore = target.file === file ? 0 : 1;
-      const generatedScore = target.generated ? 1 : 0;
-      const distanceScore = distances.has(target.name) ? distances.get(target.name) : 9999;
-      const upstreamCount = (index.graph.downstreamToUpstream.get(target.name) || new Set()).size;
-      const downstreamCount = (index.graph.descendants.get(target.name) || new Set()).size;
+      const insertContext = determineInsertContext(document, position);
+      if (!insertContext) {
+        return [];
+      }
 
-      const item = new vscode.CompletionItem(target.name, vscode.CompletionItemKind.Reference);
-      item.detail = `${target.generated ? "generated target via tar_map" : "target"} • ${formatLocation(root, target.file, target.nameRange)} • up ${upstreamCount} • down ${downstreamCount}`;
-      item.sortText = [
-        prefixScore.toString().padStart(2, "0"),
-        sameFileScore.toString().padStart(2, "0"),
-        generatedScore.toString().padStart(2, "0"),
-        String(distanceScore).padStart(4, "0"),
-        target.name
-      ].join(":");
+      // Prevent the user from inserting the current target, any existing
+      // descendants, and any target already known to be cyclic.
+      const excluded = new Set(index.graph.cyclicTargets || []);
+      for (const targetName of region.enclosingTargets) {
+        excluded.add(targetName);
+        for (const descendant of index.graph.descendants.get(targetName) || []) {
+          excluded.add(descendant);
+        }
+      }
 
-      if (insertContext.mode === "raw") {
-        item.insertText = `"${target.name}"`;
-        if (insertContext.replaceRange) {
+      const distances = buildAncestorDistanceMap(index.graph, region.enclosingTargets);
+      const prefix = extractPrefix(document, position).toLowerCase();
+      const root = this.indexManager.getWorkspaceRoot(document.uri);
+      const items = [];
+      const templateItems = buildTemplateCompletionItems(index, region, {
+        distances,
+        excluded,
+        file,
+        insertContext,
+        prefix,
+        root
+      });
+
+      items.push(...templateItems.items);
+
+      for (const target of index.targets.values()) {
+        if (excluded.has(target.name)) {
+          continue;
+        }
+
+        // Inside tar_map() template code, sibling mapped targets are completed by
+        // their template names rather than by the generated names from each row.
+        if (templateItems.coveredGeneratedTargets.has(target.name)) {
+          continue;
+        }
+
+        const prefixScore = prefixScoreForName(target.name, prefix);
+        const sameFileScore = target.file === file ? 0 : 1;
+        const generatedScore = target.generated ? 1 : 0;
+        const distanceScore = distances.has(target.name) ? distances.get(target.name) : 9999;
+        const upstreamCount = (index.graph.downstreamToUpstream.get(target.name) || new Set()).size;
+        const downstreamCount = (index.graph.descendants.get(target.name) || new Set()).size;
+
+        const item = new vscode.CompletionItem(target.name, vscode.CompletionItemKind.Reference);
+        item.detail = `${target.generated ? "generated target via tar_map" : "target"} • ${formatLocation(root, target.file, target.nameRange)} • up ${upstreamCount} • down ${downstreamCount}`;
+        item.sortText = [
+          prefixScore.toString().padStart(2, "0"),
+          sameFileScore.toString().padStart(2, "0"),
+          generatedScore.toString().padStart(2, "0"),
+          String(distanceScore).padStart(4, "0"),
+          target.name
+        ].join(":");
+
+        if (insertContext.mode === "raw") {
+          item.insertText = `"${target.name}"`;
+          if (insertContext.replaceRange) {
+            item.range = toVsCodeRange(insertContext.replaceRange);
+          }
+        } else if (insertContext.replaceRange) {
           item.range = toVsCodeRange(insertContext.replaceRange);
         }
-      } else if (insertContext.replaceRange) {
-        item.range = toVsCodeRange(insertContext.replaceRange);
+
+        items.push(item);
       }
 
-      items.push(item);
+      return items;
+    } catch (error) {
+      this.indexManager.logFailure("Completion provider failed", error, {
+        file: document.uri.fsPath
+      });
+      return [];
     }
-
-    return items;
   }
 }
 

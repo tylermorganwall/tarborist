@@ -20,6 +20,34 @@ class WorkspaceIndexManager {
     this.refreshPromises = new Map();
   }
 
+  logFailure(label, error, details = {}) {
+    if (!this.outputChannel) {
+      return;
+    }
+
+    this.outputChannel.appendLine(label);
+    for (const [key, value] of Object.entries(details)) {
+      if (value === undefined || value === null || value === "") {
+        continue;
+      }
+
+      this.outputChannel.appendLine(`  ${key}: ${value}`);
+    }
+
+    if (error && error.parseContext) {
+      for (const [key, value] of Object.entries(error.parseContext)) {
+        if (value === undefined || value === null || value === "") {
+          continue;
+        }
+
+        this.outputChannel.appendLine(`  ${key}: ${value}`);
+      }
+    }
+
+    this.outputChannel.appendLine(String(error && error.stack ? error.stack : error));
+    this.outputChannel.show(true);
+  }
+
   async activate(context) {
     context.subscriptions.push(this.diagnosticCollection);
     if (this.outputChannel) {
@@ -41,8 +69,9 @@ class WorkspaceIndexManager {
 
     const watcherUpper = vscode.workspace.createFileSystemWatcher("**/*.R");
     const watcherLower = vscode.workspace.createFileSystemWatcher("**/*.r");
+    const watcherMeta = vscode.workspace.createFileSystemWatcher("**/_targets/meta/**");
 
-    for (const watcher of [watcherUpper, watcherLower]) {
+    for (const watcher of [watcherUpper, watcherLower, watcherMeta]) {
       watcher.onDidChange(onFileEvent, null, context.subscriptions);
       watcher.onDidCreate(onFileEvent, null, context.subscriptions);
       watcher.onDidDelete(onFileEvent, null, context.subscriptions);
@@ -193,11 +222,10 @@ class WorkspaceIndexManager {
 
         return index;
       } catch (error) {
-        if (this.outputChannel) {
-          this.outputChannel.appendLine(`Failed to index ${root}`);
-          this.outputChannel.appendLine(String(error && error.stack ? error.stack : error));
-          this.outputChannel.show(true);
-        }
+        this.logFailure(`Failed to index ${root}`, error, {
+          additionalSingleTargetFactories: this.getResolverOptions().additionalSingleTargetFactories.join(", "),
+          workspaceRoot: root
+        });
 
         vscode.window.showErrorMessage("tarborist failed to index the pipeline. See the tarborist output channel for details.");
         return null;

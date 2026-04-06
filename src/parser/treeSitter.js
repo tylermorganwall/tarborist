@@ -8,6 +8,43 @@ const TreeSitter = require("web-tree-sitter");
 let parser;
 let parserReady;
 
+function summarizeText(text) {
+  const source = typeof text === "string" ? text : "";
+  const lineCount = source ? source.split(/\r?\n/).length : 0;
+  const preview = source
+    .slice(0, 200)
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return {
+    lineCount,
+    preview: preview || "<empty>",
+    textLength: source.length
+  };
+}
+
+function buildParseError(error, text, context = {}) {
+  const summary = summarizeText(text);
+  const details = [
+    "Tree-sitter parse failed",
+    context.phase ? `phase=${context.phase}` : null,
+    context.file ? `file=${context.file}` : null,
+    context.label ? `label=${context.label}` : null,
+    `chars=${summary.textLength}`,
+    `lines=${summary.lineCount}`,
+    `preview=${JSON.stringify(summary.preview)}`,
+    `cause=${error && error.message ? error.message : String(error)}`
+  ].filter(Boolean);
+
+  const wrapped = new Error(details.join(" | "));
+  wrapped.cause = error;
+  wrapped.parseContext = {
+    ...context,
+    ...summary
+  };
+  return wrapped;
+}
+
 async function ensureParserReady() {
   if (parser) {
     return parser;
@@ -41,8 +78,12 @@ function getParser() {
   return parser;
 }
 
-function parseText(text) {
-  return getParser().parse(text);
+function parseText(text, context = {}) {
+  try {
+    return getParser().parse(text);
+  } catch (error) {
+    throw buildParseError(error, text, context);
+  }
 }
 
 module.exports = {

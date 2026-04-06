@@ -9,6 +9,8 @@ const { parseText } = require("../parser/treeSitter");
 const { formatLocation, normalizeFile } = require("../util/paths");
 const { findGeneratorAtPosition, findTargetAtPosition } = require("./shared");
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 function createMarkdown() {
   // Hover links trigger extension commands, so mark only those commands as trusted.
   const markdown = new vscode.MarkdownString();
@@ -50,7 +52,7 @@ function formatTargetLinks(index, targetNames) {
   return links.length ? links.join(", ") : "`None`";
 }
 
-function commandLinkForTargetList(label, title, targets, root) {
+function commandLinkForTargetList(index, label, title, targets, root) {
   if (!targets.length) {
     return `\`${label}\``;
   }
@@ -64,7 +66,7 @@ function commandLinkForTargetList(label, title, targets, root) {
         : { file: target.file, range: target.nameRange };
 
       return {
-        description: formatLocation(root, destination.file, destination.range),
+        description: buildTargetListDescription(index, target, root, destination),
         file: destination.file,
         name: target.name,
         range: destination.range
@@ -111,6 +113,115 @@ function buildTargetOptionRows(target) {
   return rows;
 }
 
+function buildMetaStatus(meta) {
+  if (!meta) {
+    return null;
+  }
+
+  if (meta.hasWarnings && meta.hasError) {
+    return "`warning + error`";
+  }
+
+  if (meta.hasError) {
+    return "`error`";
+  }
+
+  if (meta.hasWarnings) {
+    return "`warning`";
+  }
+
+  return "`clean`";
+}
+
+function formatMetaUpdated(meta) {
+  if (!meta) {
+    return null;
+  }
+
+  if (!meta.time) {
+    return "`not built yet`";
+  }
+
+  const age = formatMetaAge(meta);
+  if (!age) {
+    return `\`${meta.time}\``;
+  }
+
+  return `\`${age}, ${meta.time}\``;
+}
+
+function formatMetaAge(meta) {
+  if (!meta || !Number.isFinite(meta.timestampMs)) {
+    return null;
+  }
+
+  const elapsedDays = Math.max(0, Math.floor((Date.now() - meta.timestampMs) / DAY_MS));
+  const dayLabel = elapsedDays === 1 ? "day" : "days";
+  return `${elapsedDays} ${dayLabel} ago`;
+}
+
+function buildTargetListDescription(index, target, root, destination) {
+  const location = formatLocation(root, destination.file, destination.range);
+  const meta = index.targetsMeta && index.targetsMeta.get(target.name);
+  if (meta && !meta.time) {
+    return `${location} (not built yet)`;
+  }
+
+  const age = formatMetaAge(meta);
+  return age ? `${location} (updated ${age})` : location;
+}
+
+function appendTextBlock(markdown, title, text) {
+  if (!text) {
+    return;
+  }
+
+  markdown.appendMarkdown(`\n**${title}**\n\n`);
+  markdown.appendMarkdown("```text\n");
+  markdown.appendMarkdown(`${text}\n`);
+  markdown.appendMarkdown("```\n");
+}
+
+function buildMetaRows(index, target) {
+  const meta = index.targetsMeta && index.targetsMeta.get(target.name);
+  if (!meta) {
+    return [];
+  }
+
+  const rows = [];
+  const updated = formatMetaUpdated(meta);
+  if (updated) {
+    rows.push({
+      label: "Updated",
+      value: updated
+    });
+  }
+
+  rows.push({
+    label: "Status",
+    value: buildMetaStatus(meta)
+  });
+
+  if (meta.size) {
+    rows.push({
+      label: "Size",
+      value: `\`${meta.size}\``
+    });
+  }
+
+  return rows;
+}
+
+function appendMetaDetails(markdown, index, target) {
+  const meta = index.targetsMeta && index.targetsMeta.get(target.name);
+  if (!meta) {
+    return;
+  }
+
+  appendTextBlock(markdown, "Warnings", meta.warnings);
+  appendTextBlock(markdown, "Error", meta.error);
+}
+
 function flattenTargetsFromValue(value) {
   if (!value) {
     return [];
@@ -139,7 +250,10 @@ function collectTargetsFromListCall(index, file, document, position) {
     return [];
   }
 
-  const tree = parseText(document.getText());
+  const tree = parseText(document.getText(), {
+    file: document.uri.fsPath,
+    phase: "hoverProvider"
+  });
   const node = findNodeAt(tree.rootNode, position);
   if (!node || node.type !== "identifier" || node.text !== "list") {
     return [];
@@ -207,8 +321,10 @@ function buildTargetHover(index, root, target) {
           ? target.generator.generatedNamesPreview.map((name) => commandLinkForTarget(index.targets.get(name)) || `\`${name}\``).join(", ")
           : "`None`"
       },
-      ...buildTargetOptionRows(target)
+      ...buildTargetOptionRows(target),
+      ...buildMetaRows(index, target)
     ]);
+    appendMetaDetails(markdown, index, target);
     markdown.appendMarkdown(`\n**Bindings**\n${formatBindings(target.generator.bindings)}\n`);
   } else {
     markdown.appendMarkdown(`### $(symbol-field) Target \`${target.name}\`\n\n`);
@@ -225,11 +341,13 @@ function buildTargetHover(index, root, target) {
       {
         label: "Downstream",
         value: downstreamCount
-          ? commandLinkForTargetList(String(downstreamCount), `Downstream of ${target.name}`, downstreamTargets, root)
+          ? commandLinkForTargetList(index, String(downstreamCount), `Downstream of ${target.name}`, downstreamTargets, root)
           : "`0`"
       },
-      ...buildTargetOptionRows(target)
+      ...buildTargetOptionRows(target),
+      ...buildMetaRows(index, target)
     ]);
+    appendMetaDetails(markdown, index, target);
 
     if (index.partial) {
       markdown.appendMarkdown(`\n> $(warning) Static analysis is partial.\n`);
@@ -245,79 +363,86 @@ class TargetHoverProvider {
   }
 
   async provideHover(document, position) {
-    const index = await this.indexManager.getIndexForUri(document.uri);
-    if (!index) {
-      return null;
-    }
-
-    const root = this.indexManager.getWorkspaceRoot(document.uri);
-    const file = normalizeFile(document.uri.fsPath);
-    const point = {
-      character: position.character,
-      line: position.line
-    };
-
-    const target = findTargetAtPosition(index, file, point);
-    if (target) {
-      return buildTargetHover(index, root, target);
-    }
-
-    const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z.][A-Za-z0-9._]*/);
-    const record = index.files.get(file);
-    if (record && wordRange) {
-      const symbol = document.getText(wordRange);
-      const value = record.exportedSymbols.get(symbol);
-      if (value && value.kind === "TargetObject" && value.target) {
-        return buildTargetHover(index, root, value.target);
+    try {
+      const index = await this.indexManager.getIndexForUri(document.uri);
+      if (!index) {
+        return null;
       }
 
-      const containedTargets = flattenTargetsFromValue(value);
-      if (containedTargets.length) {
+      const root = this.indexManager.getWorkspaceRoot(document.uri);
+      const file = normalizeFile(document.uri.fsPath);
+      const point = {
+        character: position.character,
+        line: position.line
+      };
+
+      const target = findTargetAtPosition(index, file, point);
+      if (target) {
+        return buildTargetHover(index, root, target);
+      }
+
+      const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z.][A-Za-z0-9._]*/);
+      const record = index.files.get(file);
+      if (record && wordRange) {
+        const symbol = document.getText(wordRange);
+        const value = record.exportedSymbols.get(symbol);
+        if (value && value.kind === "TargetObject" && value.target) {
+          return buildTargetHover(index, root, value.target);
+        }
+
+        const containedTargets = flattenTargetsFromValue(value);
+        if (containedTargets.length) {
+          const markdown = createMarkdown();
+          markdown.appendMarkdown(`### $(list-flat) Pipeline object \`${symbol}\`\n\n`);
+          markdown.appendMarkdown(`Contains **${containedTargets.length}** target${containedTargets.length === 1 ? "" : "s"}:\n\n`);
+          markdown.appendMarkdown(containedTargets.map((containedTarget) => `- ${commandLinkForTarget(containedTarget) || `\`${containedTarget.name}\``}`).join("\n"));
+          return new vscode.Hover(markdown);
+        }
+      }
+
+      const listTargets = collectTargetsFromListCall(index, file, document, point);
+      if (listTargets.length) {
         const markdown = createMarkdown();
-        markdown.appendMarkdown(`### $(list-flat) Pipeline object \`${symbol}\`\n\n`);
-        markdown.appendMarkdown(`Contains **${containedTargets.length}** target${containedTargets.length === 1 ? "" : "s"}:\n\n`);
-        markdown.appendMarkdown(containedTargets.map((containedTarget) => `- ${commandLinkForTarget(containedTarget) || `\`${containedTarget.name}\``}`).join("\n"));
+        markdown.appendMarkdown(`### $(list-flat) Pipeline list\n\n`);
+        markdown.appendMarkdown(`Contains **${listTargets.length}** target${listTargets.length === 1 ? "" : "s"}:\n\n`);
+        markdown.appendMarkdown(listTargets.map((containedTarget) => `- ${commandLinkForTarget(containedTarget) || `\`${containedTarget.name}\``}`).join("\n"));
         return new vscode.Hover(markdown);
       }
-    }
 
-    const listTargets = collectTargetsFromListCall(index, file, document, point);
-    if (listTargets.length) {
+      const generator = findGeneratorAtPosition(index, file, point);
+      if (!generator) {
+        return null;
+      }
+
       const markdown = createMarkdown();
-      markdown.appendMarkdown(`### $(list-flat) Pipeline list\n\n`);
-      markdown.appendMarkdown(`Contains **${listTargets.length}** target${listTargets.length === 1 ? "" : "s"}:\n\n`);
-      markdown.appendMarkdown(listTargets.map((containedTarget) => `- ${commandLinkForTarget(containedTarget) || `\`${containedTarget.name}\``}`).join("\n"));
-      return new vscode.Hover(markdown);
-    }
+      markdown.appendMarkdown(`### $(symbol-array) Static \`tar_map()\` expansion\n\n`);
+      appendInfoSection(markdown, "Expansion info");
+      appendFieldRows(markdown, [
+        {
+          label: "Origin",
+          value: `\`${formatLocation(root, generator.file, generator.range)}\``
+        },
+        {
+          label: "Generated targets",
+          value: `\`${generator.count}\``
+        }
+      ]);
 
-    const generator = findGeneratorAtPosition(index, file, point);
-    if (!generator) {
+      if ((generator.generatedNamesPreview || []).length) {
+        markdown.appendMarkdown(`\n**Preview**\n`);
+        markdown.appendMarkdown(generator.generatedNamesPreview.map((name) => {
+          const generatedTarget = index.targets.get(name);
+          return `- ${commandLinkForTarget(generatedTarget) || `\`${name}\``}`;
+        }).join("\n"));
+      }
+
+      return new vscode.Hover(markdown);
+    } catch (error) {
+      this.indexManager.logFailure("Hover provider failed", error, {
+        file: document.uri.fsPath
+      });
       return null;
     }
-
-    const markdown = createMarkdown();
-    markdown.appendMarkdown(`### $(symbol-array) Static \`tar_map()\` expansion\n\n`);
-    appendInfoSection(markdown, "Expansion info");
-    appendFieldRows(markdown, [
-      {
-        label: "Origin",
-        value: `\`${formatLocation(root, generator.file, generator.range)}\``
-      },
-      {
-        label: "Generated targets",
-        value: `\`${generator.count}\``
-      }
-    ]);
-
-    if ((generator.generatedNamesPreview || []).length) {
-      markdown.appendMarkdown(`\n**Preview**\n`);
-      markdown.appendMarkdown(generator.generatedNamesPreview.map((name) => {
-        const generatedTarget = index.targets.get(name);
-        return `- ${commandLinkForTarget(generatedTarget) || `\`${name}\``}`;
-      }).join("\n"));
-    }
-
-    return new vscode.Hover(markdown);
   }
 }
 
