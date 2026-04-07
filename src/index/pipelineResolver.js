@@ -30,7 +30,7 @@ const {
   TARGET_READ_RAW_CALLS
 } = require("../parser/queries");
 const { compareRanges, rangeFromNode, zeroRange } = require("../util/ranges");
-const { normalizeFile, pathExists } = require("../util/paths");
+const { normalizeFile, pathExists, relativeFile } = require("../util/paths");
 const { analyzeFile } = require("./fileRecord");
 const { buildPipelineGraph } = require("./graph");
 const { resolveFilePathExpression, resolveImportCall } = require("./importResolver");
@@ -98,6 +98,65 @@ function addDiagnostic(state, file, range, severity, message) {
   if (fileRecord) {
     fileRecord.diagnostics.push(createDiagnostic(file, range, severity, message));
   }
+}
+
+function compareDiagnosticLocations(left, right) {
+  if (left.file !== right.file) {
+    return left.file.localeCompare(right.file);
+  }
+
+  const leftLine = left.range && left.range.start ? left.range.start.line : 0;
+  const rightLine = right.range && right.range.start ? right.range.start.line : 0;
+  if (leftLine !== rightLine) {
+    return leftLine - rightLine;
+  }
+
+  const leftCharacter = left.range && left.range.start ? left.range.start.character : 0;
+  const rightCharacter = right.range && right.range.start ? right.range.start.character : 0;
+  return leftCharacter - rightCharacter;
+}
+
+function summarizeDiagnosticMessage(message) {
+  if (!message) {
+    return "";
+  }
+
+  return message.replace(/^Static pipeline analysis is partial:\s*/, "");
+}
+
+function buildPartialSummaryDiagnostic(workspaceRoot, rootFile, files) {
+  const partialDiagnostics = [];
+  for (const record of files.values()) {
+    for (const diagnostic of record.diagnostics || []) {
+      if (diagnostic.severity !== "warning" && diagnostic.severity !== "information") {
+        continue;
+      }
+
+      if (diagnostic.file === rootFile && diagnostic.range && diagnostic.range.start && diagnostic.range.start.line === 0 && diagnostic.range.start.character === 0 && diagnostic.message === "Static pipeline analysis is partial.") {
+        continue;
+      }
+
+      partialDiagnostics.push(diagnostic);
+    }
+  }
+
+  if (!partialDiagnostics.length) {
+    return createDiagnostic(rootFile, zeroRange(), "information", "Static pipeline analysis is partial.");
+  }
+
+  partialDiagnostics.sort(compareDiagnosticLocations);
+  const preview = partialDiagnostics.slice(0, 6).map((diagnostic) => {
+    const line = diagnostic.range && diagnostic.range.start ? diagnostic.range.start.line + 1 : 1;
+    return `${relativeFile(workspaceRoot, diagnostic.file)}:${line} ${summarizeDiagnosticMessage(diagnostic.message)}`;
+  });
+  const remaining = partialDiagnostics.length - preview.length;
+  const suffix = remaining > 0 ? `; and ${remaining} more issue${remaining === 1 ? "" : "s"}` : "";
+  return createDiagnostic(
+    rootFile,
+    zeroRange(),
+    "information",
+    `Static pipeline analysis is partial. Issues: ${preview.join("; ")}${suffix}`
+  );
 }
 
 function unwrapExpressionNode(node) {
@@ -1088,7 +1147,7 @@ function buildStaticWorkspaceIndex(options) {
   if (state.partial) {
     const rootDiagnostics = state.files.get(rootFile);
     if (rootDiagnostics) {
-      rootDiagnostics.diagnostics.push(createDiagnostic(rootFile, zeroRange(), "information", "Static pipeline analysis is partial."));
+      rootDiagnostics.diagnostics.push(buildPartialSummaryDiagnostic(workspaceRoot, rootFile, state.files));
     }
   }
 

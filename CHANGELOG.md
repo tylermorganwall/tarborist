@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.2] - 2026-04-06
+
+### Changed
+
+- The root `Static pipeline analysis is partial` diagnostic now summarizes the actual underlying issue locations and messages, so large pipelines surface where partial analysis is coming from by default.
+
 ## [0.5.1] - 2026-04-06
 
 ### Fixed

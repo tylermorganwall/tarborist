@@ -225,6 +225,27 @@ test("reads runtime metadata from _targets/meta/meta", () => {
   assert.equal(meta.error, "error text");
 });
 
+test("root partial-analysis diagnostic summarizes the underlying issue locations", () => {
+  const index = buildIndex("partial_summary");
+  const rootRecord = [...index.files.values()].find((record) => record.file.endsWith(path.join("partial_summary", "_targets.R")));
+  const summary = rootRecord.diagnostics.find((diagnostic) => diagnostic.severity === "information" && diagnostic.message.startsWith("Static pipeline analysis is partial. Issues:"));
+
+  assert.equal(index.partial, true);
+  assert.ok(summary);
+  assert.match(summary.message, /_targets\.R:2 unresolved symbol 'part'/);
+});
+
+test("root partial-analysis diagnostic includes issue locations from imported files", () => {
+  const index = buildIndex("partial_summary_import");
+  const rootRecord = [...index.files.values()].find((record) => record.file.endsWith(path.join("partial_summary_import", "_targets.R")));
+  const summary = rootRecord.diagnostics.find((diagnostic) => diagnostic.severity === "information" && diagnostic.message.startsWith("Static pipeline analysis is partial. Issues:"));
+
+  assert.equal(index.partial, true);
+  assert.ok(index.targets.has("a"));
+  assert.ok(summary);
+  assert.match(summary.message, /part\.R:3 unresolved symbol 'missing_part'/);
+});
+
 test("captures cue and parallel target options verbatim", () => {
   const index = buildIndex("target_options");
   const target = index.targets.get("a");
