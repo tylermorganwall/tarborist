@@ -176,6 +176,24 @@ test("expands tar_map() templates built from configured single-target factories"
   assert.ok(!diagnostics.some((diagnostic) => diagnostic.message.includes("Could not statically resolve tar_map() target template")));
 });
 
+test("ignores trailing NULL templates inside tar_map()", () => {
+  const index = buildIndex("tar_map_null");
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+
+  assert.equal(index.partial, false);
+  assert.deepEqual(
+    [...index.targets.keys()],
+    [
+      "fit_penguins_adelie",
+      "report_penguins_adelie",
+      "fit_penguins_gentoo",
+      "report_penguins_gentoo"
+    ]
+  );
+  assert.ok(index.refs.some((ref) => ref.synthetic && ref.enclosingTarget === "report_penguins_adelie" && ref.targetName === "fit_penguins_adelie"));
+  assert.ok(!diagnostics.some((diagnostic) => diagnostic.message.includes("Could not statically resolve tar_map() target template")));
+});
+
 test("resolves tar_map() outputs selected through list subsetting", () => {
   const index = buildIndex("tar_map_subset");
   const refs = index.refs.filter((ref) => ref.enclosingTarget === "summary_fit");

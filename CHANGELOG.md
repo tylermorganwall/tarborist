@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.3] - 2026-04-06
+
+### Fixed
+
+- `tar_map()` now ignores a trailing `NULL` template entry instead of marking the template list as partially unsupported.
+
 ## [0.5.2] - 2026-04-06
 
 ### Changed

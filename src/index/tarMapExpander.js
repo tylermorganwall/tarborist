@@ -70,6 +70,10 @@ function collectTemplateTargets(node, file, directTargetCalls, diagnostics) {
     return [];
   }
 
+  if ((current.type === "identifier" && current.text === "NULL") || current.type === "null") {
+    return [];
+  }
+
   if (matchesCall(current, directTargetCalls)) {
     const parsed = parseTarTargetCall(current, file, {
       origin: "tar_target"
