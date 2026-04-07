@@ -1,6 +1,7 @@
 "use strict";
 
-// Resolve target references to their defining tar_target() or tar_map() origin.
+// Resolve target references to their defining tar_target()/target-like factory
+// or tar_map() origin.
 const { normalizeFile } = require("../util/paths");
 const { toVsCodeLocation } = require("../util/vscode");
 const { findTargetAtPosition } = require("./shared");

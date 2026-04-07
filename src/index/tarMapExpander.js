@@ -4,13 +4,15 @@
 // template targets, and synthesize generated target definitions.
 const {
   getNamedArgument,
+  getPositionalArgument,
   getShortCallName,
+  getStringValue,
   isStringNode,
   matchesCall,
   unpackArguments,
   unwrapNode
 } = require("../parser/ast");
-const { TAR_MAP_CONTROL_ARGUMENTS } = require("../parser/queries");
+const { DIRECT_TARGET_CALLS, TAR_MAP_CONTROL_ARGUMENTS } = require("../parser/queries");
 const { rangeFromNode } = require("../util/ranges");
 const { resolveStaticTableRows } = require("./staticTable");
 const { parseTarTargetCall } = require("./targetFactories");
@@ -62,13 +64,13 @@ function parseNameColumns(node, availableColumns) {
   return availableColumns;
 }
 
-function collectTemplateTargets(node, file, generatorMeta, diagnostics) {
+function collectTemplateTargets(node, file, directTargetCalls, diagnostics) {
   const current = unwrapNode(node);
   if (!current) {
     return [];
   }
 
-  if (matchesCall(current, new Set(["tar_target", "targets::tar_target"]))) {
+  if (matchesCall(current, directTargetCalls)) {
     const parsed = parseTarTargetCall(current, file, {
       origin: "tar_target"
     });
@@ -88,7 +90,7 @@ function collectTemplateTargets(node, file, generatorMeta, diagnostics) {
   if (matchesCall(current, new Set(["list"]))) {
     const targets = [];
     for (const argument of unpackArguments(current)) {
-      targets.push(...collectTemplateTargets(argument.value, file, generatorMeta, diagnostics));
+      targets.push(...collectTemplateTargets(argument.value, file, directTargetCalls, diagnostics));
     }
 
     return targets;
@@ -106,7 +108,7 @@ function resolveTarMapRows(node, env) {
   return resolveStaticTableRows(node, env);
 }
 
-function expandTarMap(callNode, file, env = new Map()) {
+function expandTarMap(callNode, file, env = new Map(), directTargetCalls = DIRECT_TARGET_CALLS) {
   // Expand the generator without evaluating NSE: derive rows, generate names,
   // and attach binding metadata for hover/ref extraction later.
   const diagnostics = [];
@@ -164,7 +166,7 @@ function expandTarMap(callNode, file, env = new Map()) {
 
   const templateTargets = [];
   for (const argument of templateArguments) {
-    templateTargets.push(...collectTemplateTargets(argument.value, file, rangeFromNode(callNode), diagnostics));
+    templateTargets.push(...collectTemplateTargets(argument.value, file, directTargetCalls, diagnostics));
   }
 
   if (!templateTargets.length) {

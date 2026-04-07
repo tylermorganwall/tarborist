@@ -1,0 +1,8 @@
+---
+title: "tracked file only"
+format: html
+---
+
+```{r}
+tar_read(data)
+```

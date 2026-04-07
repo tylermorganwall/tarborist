@@ -461,7 +461,7 @@ function resolvePipedTargetFactoryCall(node, env, state, file, forcedName = null
     return makeUnknown(
       file,
       rangeFromNode(node),
-      "Static pipeline analysis is partial: tar_assign() piped expressions must end in tar_target()"
+      "Static pipeline analysis is partial: tar_assign() piped expressions must end in tar_target()/target-like factory"
     );
   }
 
@@ -470,7 +470,7 @@ function resolvePipedTargetFactoryCall(node, env, state, file, forcedName = null
     return makeUnknown(
       file,
       rangeFromNode(commandArgument.value || pipe.rhs),
-      "Static pipeline analysis is partial: tar_assign() piped tar_target() must use an empty command or command = _"
+      "Static pipeline analysis is partial: piped tar_target()/target-like factory calls must use an empty command or command = _"
     );
   }
 
@@ -522,7 +522,7 @@ function resolveTargetFactoryCall(node, env, state, file, forcedName = null, for
   }
 
   if (matchesCall(current, MAP_CALLS)) {
-    const expanded = expandTarMap(current, file, env);
+    const expanded = expandTarMap(current, file, env, state.callSets.directTargetCalls);
     for (const diagnostic of expanded.diagnostics || []) {
       addDiagnostic(state, file, diagnostic.range, diagnostic.severity, diagnostic.message);
     }

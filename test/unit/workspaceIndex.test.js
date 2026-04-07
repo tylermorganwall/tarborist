@@ -156,6 +156,26 @@ test("expands tar_map() values resolved from static rbind() helpers", () => {
   assert.ok(index.refs.some((ref) => ref.synthetic && ref.enclosingTarget === "report_penguins_gentoo_extra" && ref.targetName === "fit_penguins_gentoo_extra"));
 });
 
+test("expands tar_map() templates built from configured single-target factories", () => {
+  const index = buildIndex("tar_map_additional_factory", {
+    additionalSingleTargetFactories: ["tar_file"]
+  });
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+
+  assert.equal(index.partial, false);
+  assert.deepEqual(
+    [...index.targets.keys()],
+    [
+      "quarto_parameterized_alpha",
+      "rendered_report_alpha",
+      "quarto_parameterized_beta",
+      "rendered_report_beta"
+    ]
+  );
+  assert.ok(index.refs.some((ref) => ref.synthetic && ref.enclosingTarget === "rendered_report_alpha" && ref.targetName === "quarto_parameterized_alpha"));
+  assert.ok(!diagnostics.some((diagnostic) => diagnostic.message.includes("Could not statically resolve tar_map() target template")));
+});
+
 test("resolves tar_map() outputs selected through list subsetting", () => {
   const index = buildIndex("tar_map_subset");
   const refs = index.refs.filter((ref) => ref.enclosingTarget === "summary_fit");
@@ -275,6 +295,17 @@ test("scans tar_quarto() documents for tar_read()/tar_load() dependencies, inclu
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "report" && ref.targetName === "other" && ref.context === "tar_load"));
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "report" && ref.targetName === "raw_data" && ref.context === "tar_read_raw"));
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "report" && ref.targetName === "raw_loaded" && ref.context === "tar_load_raw"));
+});
+
+test("does not scan tracked quarto files referenced by tar_file()", () => {
+  const index = buildIndex("tar_file_qmd", {
+    additionalSingleTargetFactories: ["tar_file"]
+  });
+  const refs = index.refs.filter((ref) => ref.enclosingTarget === "report_source");
+
+  assert.equal(index.partial, false);
+  assert.deepEqual([...index.targets.keys()], ["data", "report_source"]);
+  assert.deepEqual(refs, []);
 });
 
 test("indexes tar_combine() upstream target arguments", () => {

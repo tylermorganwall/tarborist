@@ -1,7 +1,7 @@
 "use strict";
 
-// Parse direct tar_target() calls into the normalized target shape used
-// throughout the workspace index.
+// Parse direct tar_target()/target-like factory calls into the normalized
+// target shape used throughout the workspace index.
 const CUE_ARGUMENT_NAMES = new Set(["cue"]);
 const PARALLEL_ARGUMENT_NAMES = new Set(["deployment", "memory", "priority", "resources", "retrieval", "storage"]);
 
@@ -100,14 +100,14 @@ function parseTarTargetCall(callNode, file, options = {}) {
   if ((!nameArgument || !nameArgument.value) && !options.nameOverride) {
     return {
       ok: false,
-      reason: "Could not statically resolve tar_target() name"
+      reason: "Could not statically resolve tar_target()/target-like factory name"
     };
   }
 
   if (!rawCommandNode) {
     return {
       ok: false,
-      reason: "Could not statically resolve tar_target() arguments"
+      reason: "Could not statically resolve tar_target()/target-like factory arguments"
     };
   }
 
@@ -115,7 +115,7 @@ function parseTarTargetCall(callNode, file, options = {}) {
   if (!name) {
     return {
       ok: false,
-      reason: "Could not statically resolve tar_target() name"
+      reason: "Could not statically resolve tar_target()/target-like factory name"
     };
   }
 

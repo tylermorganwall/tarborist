@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1] - 2026-04-06
+
+### Fixed
+
+- `tar_map()` template expansion now recognizes configured `tar_target()`-like single-target factories such as `tar_file()` instead of emitting a spurious `Could not statically resolve tar_map() target template` diagnostic.
+- User-facing diagnostics now refer to `tar_target()/target-like factory` in the remaining places where configured single-target factories share the same static parsing path.
+
 ## [0.5.0] - 2026-04-06
 
 ### Added
