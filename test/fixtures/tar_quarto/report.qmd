@@ -6,4 +6,6 @@ format: html
 ```{r}
 summary_value <- tar_read(data)
 tar_load(other)
+raw_value <- tar_read_raw(params$raw_data)
+tar_load_raw(params$raw_loaded)
 ```

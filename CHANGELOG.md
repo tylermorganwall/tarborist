@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.0] - 2026-04-06
+
+### Added
+
+- Static support for parameterized `tar_quarto()` reports that reference raw targets through `tar_read_raw(params$target_name)`, `tar_load_raw(params$target_name)`, and related `params[[...]]` access.
+
 ## [0.4.0] - 2026-04-06
 
 ### Added

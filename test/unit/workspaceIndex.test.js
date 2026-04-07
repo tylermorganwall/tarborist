@@ -266,13 +266,15 @@ test("indexes configured additional single-target factories", () => {
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "d" && ref.targetName === "c"));
 });
 
-test("scans tar_quarto() documents for tar_read()/tar_load() dependencies", () => {
+test("scans tar_quarto() documents for tar_read()/tar_load() dependencies, including raw params access", () => {
   const index = buildIndex("tar_quarto");
   const report = index.targets.get("report");
 
   assert.ok(report);
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "report" && ref.targetName === "data" && ref.context === "tar_read"));
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "report" && ref.targetName === "other" && ref.context === "tar_load"));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "report" && ref.targetName === "raw_data" && ref.context === "tar_read_raw"));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "report" && ref.targetName === "raw_loaded" && ref.context === "tar_load_raw"));
 });
 
 test("indexes tar_combine() upstream target arguments", () => {

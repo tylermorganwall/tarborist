@@ -27,7 +27,7 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - Indexes `tar_assign()` target lists, including supported native-pipe `tar_target()` forms
 - Indexes `tar_select_targets()` in a supported static tidyselect subset
 - Indexes `tar_combine()` upstream target arguments
-- Indexes `tar_quarto()` targets and scans referenced `.qmd` / `.Rmd` files for `tar_read()` and `tar_load()`
+- Indexes `tar_quarto()` targets and scans referenced `.qmd` / `.Rmd` files for `tar_read()`, `tar_load()`, `tar_read_raw()`, and `tar_load_raw()`, including parameterized report refs like `params$target_name` and `params[[\"target_name\"]]`
 - Expands a supported static subset of `tar_map()`, including `values = some_symbol` when `some_symbol` is built from supported static table helpers such as `expand_grid()`, `expand.grid()`, `bind_rows()`, `rbind()`, and top-level column assignment
 - Can opt into additional `tar_target()`-like single-target factories through the `tarborist.additionalSingleTargetFactories` setting
 - Builds a provisional dependency graph
@@ -43,7 +43,7 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - `tar_assign()` targets written as `x <- expr |> tar_target()` or `x <- expr |> tar_target(command = _)`
 - `tar_select_targets(...)` with a supported tidyselect subset
 - `tar_combine(...)`
-- `tar_quarto(...)` with static scanning of referenced `.qmd` / `.Rmd` files
+- `tar_quarto(...)` with static scanning of referenced `.qmd` / `.Rmd` files, including parameterized raw-target access through `params$...` and `params[[...]]`
 - `tar_map(...)` in a supported static subset
 - `tar_map(values = some_symbol, names = some_column, ...)` when `some_symbol` is statically built from supported helper-table constructors such as `tidyr::expand_grid(...)`, `expand.grid(...)`, `dplyr::bind_rows(...)`, `rbind(...)`, and top-level `$` / `[[ ]]` column assignment
 - user-configured single-target factories that follow the same `name` / `command` / `pattern` shape as `tar_target()`
@@ -52,7 +52,7 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - target objects assigned to symbols and later included in `list(...)`
 - sourced partial pipelines
 - static target lists built from `list(...)`
-- static target references from bare symbols, `tar_read(...)`, `tar_load(...)`, and raw-string variants when statically obvious
+- static target references from bare symbols, `tar_read(...)`, `tar_load(...)`, raw variants when statically obvious, and parameterized Quarto raw-target refs such as `tar_read_raw(params$target_name)`
 
 ## What it does not do
 

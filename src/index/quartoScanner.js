@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 
 const {
+  getArgumentValue,
   getPositionalArgument,
   getStringValue,
   getShortCallName,
@@ -15,7 +16,7 @@ const {
   walkNamed
 } = require("../parser/ast");
 const { parseText } = require("../parser/treeSitter");
-const { TARGET_LOAD_CALLS, TARGET_READ_CALLS } = require("../parser/queries");
+const { TARGET_LOAD_CALLS, TARGET_LOAD_RAW_CALLS, TARGET_READ_CALLS, TARGET_READ_RAW_CALLS } = require("../parser/queries");
 const { normalizeFile, pathExists } = require("../util/paths");
 const { rangeFromNode } = require("../util/ranges");
 
@@ -103,6 +104,81 @@ function remapRange(range, lineMap) {
   };
 }
 
+function extractParamTargetReference(node) {
+  const current = unwrapNode(node);
+  if (!current) {
+    return null;
+  }
+
+  if (current.type === "extract_operator") {
+    const objectNode = current.namedChildren && current.namedChildren.length ? unwrapNode(current.namedChildren[0]) : null;
+    const propertyNode = current.namedChildren && current.namedChildren.length > 1 ? unwrapNode(current.namedChildren[1]) : null;
+    if (objectNode && objectNode.type === "identifier" && objectNode.text === "params" && propertyNode && propertyNode.type === "identifier") {
+      return {
+        range: rangeFromNode(propertyNode),
+        targetName: propertyNode.text
+      };
+    }
+  }
+
+  if (current.type !== "subset2" && current.type !== "subset") {
+    return null;
+  }
+
+  const objectNode = current.namedChildren && current.namedChildren.length ? unwrapNode(current.namedChildren[0]) : null;
+  if (!objectNode || objectNode.type !== "identifier" || objectNode.text !== "params") {
+    return null;
+  }
+
+  const argumentsNode = (current.namedChildren || []).find((child) => child.type === "arguments");
+  const argumentNode = argumentsNode && argumentsNode.namedChildren
+    ? argumentsNode.namedChildren.find((child) => child.type === "argument")
+    : null;
+  const indexNode = argumentNode ? unwrapNode(getArgumentValue(argumentNode)) : null;
+  if (!indexNode) {
+    return null;
+  }
+
+  if (indexNode.type === "identifier") {
+    return {
+      range: rangeFromNode(indexNode),
+      targetName: indexNode.text
+    };
+  }
+
+  if (isStringNode(indexNode)) {
+    return {
+      range: rangeFromNode(indexNode),
+      targetName: getStringValue(indexNode)
+    };
+  }
+
+  return null;
+}
+
+function extractQuartoTargetReference(node) {
+  const current = unwrapNode(node);
+  if (!current) {
+    return null;
+  }
+
+  if (current.type === "identifier") {
+    return {
+      range: rangeFromNode(current),
+      targetName: current.text
+    };
+  }
+
+  if (isStringNode(current)) {
+    return {
+      range: rangeFromNode(current),
+      targetName: getStringValue(current)
+    };
+  }
+
+  return extractParamTargetReference(current);
+}
+
 function collectQuartoRefsFromCode(code, file, lineMap) {
   if (!code.trim()) {
     return [];
@@ -120,7 +196,9 @@ function collectQuartoRefsFromCode(code, file, lineMap) {
 
     const isRead = matchesCall(node, TARGET_READ_CALLS);
     const isLoad = matchesCall(node, TARGET_LOAD_CALLS);
-    if (!isRead && !isLoad) {
+    const isReadRaw = matchesCall(node, TARGET_READ_RAW_CALLS);
+    const isLoadRaw = matchesCall(node, TARGET_LOAD_RAW_CALLS);
+    if (!isRead && !isLoad && !isReadRaw && !isLoadRaw) {
       return;
     }
 
@@ -129,25 +207,20 @@ function collectQuartoRefsFromCode(code, file, lineMap) {
       return;
     }
 
-    const current = unwrapNode(firstArgument.value);
-    let targetName = null;
-    if (current && current.type === "identifier") {
-      targetName = current.text;
-    } else if (isStringNode(current)) {
-      targetName = getStringValue(current);
-    }
-
-    if (!targetName) {
+    const reference = extractQuartoTargetReference(firstArgument.value);
+    if (!reference || !reference.targetName) {
       return;
     }
 
     const shortCallName = getShortCallName(node);
     refs.push({
-      context: shortCallName && shortCallName.startsWith("tar_load") ? "tar_load" : "tar_read",
+      context: shortCallName && shortCallName.startsWith("tar_load")
+        ? (shortCallName.endsWith("_raw") ? "tar_load_raw" : "tar_load")
+        : (shortCallName && shortCallName.endsWith("_raw") ? "tar_read_raw" : "tar_read"),
       file,
-      range: remapRange(rangeFromNode(current), lineMap),
+      range: remapRange(reference.range, lineMap),
       synthetic: false,
-      targetName
+      targetName: reference.targetName
     });
   });
 
