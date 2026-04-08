@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.0] - 2026-04-08
+
+### Added
+
+- A bundled `tarborist_make()` helper plus install/update commands for loading it into the active Positron R session with a tarborist-generated target manifest.
+- A helper-driven `tarborist: Run tarborist_make() in R session` command that refreshes the manifest and runs `tarborist_make()` in the active Positron R console.
+- Automatic background manifest refresh on save for workspaces where `tarborist_make()` has already been installed.
+- Built-in parsing support for common single-target factories `tar_file()`, `tar_qs()`, and `tar_skip()`.
+
+### Changed
+
+- `tarborist_make()` now captures reporter stdout so dispatched/completed target lines are linkified in the console.
+- The helper now prints an install confirmation when the manifest is set and returns invisibly so successful runs do not print a trailing `NULL`.
+- Positron runtime diagnostics for helper commands now report the available runtime bridge state more clearly.
+- tarborist popup errors now strip ANSI and CLI formatting before rendering user-facing messages.
+- Tree-sitter/provider parse failures now log richer context, including provider phase, file, line, hovered word, and line/source previews, while tarborist errors no longer force the output channel to steal focus.
+- Hover downstream summaries now show direct downstream targets inline when possible and collapse the rest into a `(+N further)` picker link.
+- `tar_map()` template completions now wait for a two-character prefix before suggesting mapped target names.
+- README now documents the helper-based `tarborist_make()` workflow and its current runtime limitations.
+
 ## [0.5.3] - 2026-04-06
 
 ### Fixed

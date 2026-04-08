@@ -15,6 +15,7 @@ const { formatLocation, normalizeFile } = require("../util/paths");
 const { comparePositions, containsPosition, rangeFromNode } = require("../util/ranges");
 const { toVsCodeRange } = require("../util/vscode");
 const { findCompletionRegion } = require("./shared");
+const TAR_MAP_TEMPLATE_COMPLETION_MIN_PREFIX = 2;
 
 function buildAncestorDistanceMap(graph, enclosingTargets) {
   // Rank nearby upstream targets ahead of distant ones.
@@ -45,6 +46,19 @@ function extractPrefix(document, position) {
   const line = document.lineAt(position.line).text.slice(0, position.character);
   const match = line.match(/[A-Za-z0-9_.]+$/);
   return match ? match[0] : "";
+}
+
+function buildProviderParseContext(document, position, phase) {
+  const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z.][A-Za-z0-9._]*/);
+  const lineText = document.lineAt(position.line).text;
+  return {
+    character: position.character,
+    file: document.uri.fsPath,
+    line: position.line + 1,
+    linePreview: lineText.trim().slice(0, 200),
+    phase,
+    word: wordRange ? document.getText(wordRange) : ""
+  };
 }
 
 function prefixScoreForName(name, prefix) {
@@ -104,10 +118,7 @@ function findCallArgumentContext(node, position, callNames) {
 
 function determineInsertContext(document, position) {
   // Completions insert strings inside raw APIs and bare symbols everywhere else.
-  const tree = parseText(document.getText(), {
-    file: document.uri.fsPath,
-    phase: "completionProvider"
-  });
+  const tree = parseText(document.getText(), buildProviderParseContext(document, position, "completionProvider"));
   const point = {
     character: position.character,
     line: position.line
@@ -260,6 +271,9 @@ class TargetCompletionProvider {
       const prefix = extractPrefix(document, position).toLowerCase();
       const root = this.indexManager.getWorkspaceRoot(document.uri);
       const items = [];
+      if (region.generated && prefix.length < TAR_MAP_TEMPLATE_COMPLETION_MIN_PREFIX) {
+        return [];
+      }
       const templateItems = buildTemplateCompletionItems(index, region, {
         distances,
         excluded,
@@ -313,9 +327,7 @@ class TargetCompletionProvider {
 
       return items;
     } catch (error) {
-      this.indexManager.logFailure("Completion provider failed", error, {
-        file: document.uri.fsPath
-      });
+      this.indexManager.logFailure("Completion provider failed", error, buildProviderParseContext(document, position, "completionProvider"));
       return [];
     }
   }

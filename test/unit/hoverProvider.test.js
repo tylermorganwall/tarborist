@@ -89,6 +89,9 @@ function createDocument(text, filePath) {
   }
 
   return {
+    lineAt(line) {
+      return { text: lines[line] || "" };
+    },
     uri: {
       fsPath: filePath
     },
@@ -217,9 +220,32 @@ test("hover shows not built yet when a meta row exists without a timestamp", asy
   assert.match(markdown, /\| \*\*Size\*\* \| `128 B` \|/);
 });
 
-test("downstream quick-pick payload includes relative update age before the location", async () => {
+test("hover shows downstream as direct links plus a further-children quick-pick link", async () => {
   const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
-  const { index, root } = buildIndex("meta_hover");
+  const { index, root } = buildIndex("downstream_hover");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(x, 1)"));
+  const position = { line: lineIndex, character: text.split("\n")[lineIndex].indexOf("x") };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+  const markdown = hover.contents[0].value;
+
+  assert.match(markdown, /\| \*\*Downstream\*\* \| .*`y`.*`z`.*\[`\(\+2 further\)`\]\(command:tarborist\.showTargetList\?.*\|/);
+});
+
+test("further-downstream quick-pick payload includes relative update age after the location", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("meta_downstream_hover");
   const filePath = path.join(root, "_targets.R");
   const text = fs.readFileSync(filePath, "utf8");
   const document = createDocument(text, filePath);
@@ -249,11 +275,11 @@ test("downstream quick-pick payload includes relative update age before the loca
   const markdown = hover.contents[0].value;
   const commandPrefix = "command:tarborist.showTargetList?";
   const commandStart = markdown.indexOf(commandPrefix);
-  assert.notEqual(commandStart, -1, "expected a downstream quick-pick command link in the hover");
+  assert.notEqual(commandStart, -1, "expected a further-downstream quick-pick command link in the hover");
 
   const payloadStart = commandStart + commandPrefix.length;
   const payloadEnd = markdown.indexOf(") |", payloadStart);
   const [payload] = JSON.parse(decodeURIComponent(markdown.slice(payloadStart, payloadEnd)));
-  assert.equal(payload.targets[0].name, "y");
-  assert.match(payload.targets[0].description, /^_targets\.R:3 \(not built yet\)$/);
+  assert.equal(payload.targets[0].name, "z");
+  assert.match(payload.targets[0].description, /^_targets\.R:4 \(not built yet\)$/);
 });

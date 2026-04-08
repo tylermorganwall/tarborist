@@ -45,7 +45,6 @@ class WorkspaceIndexManager {
     }
 
     this.outputChannel.appendLine(String(error && error.stack ? error.stack : error));
-    this.outputChannel.show(true);
   }
 
   async activate(context) {

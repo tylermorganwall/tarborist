@@ -3,7 +3,13 @@
 // Central list of call names that tarborist treats as pipeline-relevant.
 const DIRECT_TARGET_CALLS = new Set([
   "tar_target",
-  "targets::tar_target"
+  "targets::tar_target",
+  "tar_file",
+  "tarchetypes::tar_file",
+  "tar_qs",
+  "tarchetypes::tar_qs",
+  "tar_skip",
+  "tarchetypes::tar_skip"
 ]);
 
 const DIRECT_TARGET_CALL_NAME_PATTERN = /^[A-Za-z.][A-Za-z0-9._]*(::[A-Za-z.][A-Za-z0-9._]*)?$/;

@@ -5,14 +5,14 @@
   "description": "Static analysis for navigating and debugging complex R targets pipelines",
   "icon": "tarborist.png",
   "license": "GPL-3.0-or-later",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/tylermorganwall/tarborist.git"
   },
   "private": true,
   "engines": {
-    "positron": "^2025.6.0",
+    "positron": "^2026.03.0",
     "vscode": "^1.96.0"
   },
   "categories": [
@@ -35,7 +35,7 @@
           "items": {
             "type": "string"
           },
-          "markdownDescription": "Additional `tar_target()`-like factory names to treat as single-target factories during static analysis. Use this only for factories that create exactly one target and follow the same `name` / `command` / `pattern` shape as `tar_target()`, for example `tar_qs` or `tar_parquet`."
+          "markdownDescription": "Additional `tar_target()`-like factory names to treat as single-target factories during static analysis. Use this only for factories that create exactly one target and follow the same `name` / `command` / `pattern` shape as `tar_target()`, for example `tar_parquet`."
         }
       }
     },
@@ -43,6 +43,18 @@
       {
         "command": "tarborist.refreshIndex",
         "title": "tarborist: Refresh Pipeline Index"
+      },
+      {
+        "command": "tarborist.tarMake",
+        "title": "tarborist: Run tarborist_make() in R session"
+      },
+      {
+        "command": "tarborist.installTarboristMake",
+        "title": "tarborist: Install tarborist_make() in R session"
+      },
+      {
+        "command": "tarborist.updateTarboristManifest",
+        "title": "tarborist: Update tarborist manifest"
       }
     ]
   },
@@ -51,6 +63,7 @@
   },
   "dependencies": {
     "@davisvaughan/tree-sitter-r": "^1.2.0",
+    "@posit-dev/positron": "^0.2.0",
     "web-tree-sitter": "^0.26.8"
   },
   "devDependencies": {

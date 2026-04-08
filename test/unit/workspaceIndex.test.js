@@ -156,10 +156,8 @@ test("expands tar_map() values resolved from static rbind() helpers", () => {
   assert.ok(index.refs.some((ref) => ref.synthetic && ref.enclosingTarget === "report_penguins_gentoo_extra" && ref.targetName === "fit_penguins_gentoo_extra"));
 });
 
-test("expands tar_map() templates built from configured single-target factories", () => {
-  const index = buildIndex("tar_map_additional_factory", {
-    additionalSingleTargetFactories: ["tar_file"]
-  });
+test("expands tar_map() templates built from built-in single-target factories", () => {
+  const index = buildIndex("tar_map_additional_factory");
   const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
 
   assert.equal(index.partial, false);
@@ -314,7 +312,7 @@ test("indexes tar_select_targets() with tidyselect operators", () => {
 
 test("indexes configured additional single-target factories", () => {
   const index = buildIndex("additional_target_factories", {
-    additionalSingleTargetFactories: ["tar_qs", "tar_parquet"]
+    additionalSingleTargetFactories: ["tar_parquet"]
   });
 
   assert.equal(index.partial, false);
@@ -337,9 +335,7 @@ test("scans tar_quarto() documents for tar_read()/tar_load() dependencies, inclu
 });
 
 test("does not scan tracked quarto files referenced by tar_file()", () => {
-  const index = buildIndex("tar_file_qmd", {
-    additionalSingleTargetFactories: ["tar_file"]
-  });
+  const index = buildIndex("tar_file_qmd");
   const refs = index.refs.filter((ref) => ref.enclosingTarget === "report_source");
 
   assert.equal(index.partial, false);

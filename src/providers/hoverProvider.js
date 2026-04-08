@@ -10,6 +10,7 @@ const { formatLocation, normalizeFile } = require("../util/paths");
 const { findGeneratorAtPosition, findTargetAtPosition } = require("./shared");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_INLINE_DIRECT_DOWNSTREAM = 5;
 
 function createMarkdown() {
   // Hover links trigger extension commands, so mark only those commands as trusted.
@@ -76,6 +77,35 @@ function commandLinkForTargetList(index, label, title, targets, root) {
   };
   const encoded = encodeURIComponent(JSON.stringify([payload]));
   return `[\`${label}\`](command:tarborist.showTargetList?${encoded})`;
+}
+
+function buildDownstreamSummaryValue(index, root, targetName, directDownstreamTargets, furtherDownstreamTargets) {
+  if (!directDownstreamTargets.length) {
+    return "`0`";
+  }
+
+  const directValue = directDownstreamTargets.length <= MAX_INLINE_DIRECT_DOWNSTREAM
+    ? directDownstreamTargets.map((downstreamTarget) => commandLinkForTarget(downstreamTarget) || `\`${downstreamTarget.name}\``).join(", ")
+    : commandLinkForTargetList(index, `(${directDownstreamTargets.length})`, `Direct downstream of ${targetName}`, directDownstreamTargets, root);
+
+  if (!furtherDownstreamTargets.length) {
+    return directValue;
+  }
+
+  return `${directValue}, ${commandLinkForTargetList(index, `(+${furtherDownstreamTargets.length} further)`, `Further downstream of ${targetName}`, furtherDownstreamTargets, root)}`;
+}
+
+function buildProviderParseContext(document, position, phase) {
+  const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z.][A-Za-z0-9._]*/);
+  const lineText = document.lineAt(position.line).text;
+  return {
+    character: position.character,
+    file: document.uri.fsPath,
+    line: position.line + 1,
+    linePreview: lineText.trim().slice(0, 200),
+    phase,
+    word: wordRange ? document.getText(wordRange) : ""
+  };
 }
 
 function appendInfoSection(markdown, title = "Target info") {
@@ -250,10 +280,7 @@ function collectTargetsFromListCall(index, file, document, position) {
     return [];
   }
 
-  const tree = parseText(document.getText(), {
-    file: document.uri.fsPath,
-    phase: "hoverProvider"
-  });
+  const tree = parseText(document.getText(), buildProviderParseContext(document, position, "hoverProvider"));
   const node = findNodeAt(tree.rootNode, position);
   if (!node || node.type !== "identifier" || node.text !== "list") {
     return [];
@@ -297,11 +324,18 @@ function buildTargetHover(index, root, target) {
   // related targets directly from the hover body.
   const markdown = createMarkdown();
   const upstream = [...(index.graph.downstreamToUpstream.get(target.name) || new Set())].sort();
+  const directDownstreamTargets = [...(index.graph.upstreamToDownstream.get(target.name) || new Set())]
+    .sort()
+    .map((targetName) => index.targets.get(targetName))
+    .filter(Boolean);
+  const directDownstreamNames = new Set(directDownstreamTargets.map((downstreamTarget) => downstreamTarget.name));
   const downstreamTargets = [...(index.graph.descendants.get(target.name) || new Set())]
     .sort()
     .map((targetName) => index.targets.get(targetName))
     .filter(Boolean);
   const downstreamCount = (index.graph.descendants.get(target.name) || new Set()).size;
+  const furtherDownstreamTargets = downstreamTargets.filter((downstreamTarget) => !directDownstreamNames.has(downstreamTarget.name));
+  const downstreamSummaryValue = buildDownstreamSummaryValue(index, root, target.name, directDownstreamTargets, furtherDownstreamTargets);
 
   if (target.generated && target.generator) {
     markdown.appendMarkdown(`### $(symbol-array) Generated target \`${target.name}\`\n\n`);
@@ -314,6 +348,10 @@ function buildTargetHover(index, root, target) {
       {
         label: "Template",
         value: `\`${target.generator.templateName}\``
+      },
+      {
+        label: "Downstream",
+        value: downstreamSummaryValue
       },
       {
         label: "Siblings",
@@ -340,9 +378,7 @@ function buildTargetHover(index, root, target) {
       },
       {
         label: "Downstream",
-        value: downstreamCount
-          ? commandLinkForTargetList(index, String(downstreamCount), `Downstream of ${target.name}`, downstreamTargets, root)
-          : "`0`"
+        value: downstreamSummaryValue
       },
       ...buildTargetOptionRows(target),
       ...buildMetaRows(index, target)
@@ -438,9 +474,7 @@ class TargetHoverProvider {
 
       return new vscode.Hover(markdown);
     } catch (error) {
-      this.indexManager.logFailure("Hover provider failed", error, {
-        file: document.uri.fsPath
-      });
+      this.indexManager.logFailure("Hover provider failed", error, buildProviderParseContext(document, position, "hoverProvider"));
       return null;
     }
   }
