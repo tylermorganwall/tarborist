@@ -3,19 +3,35 @@
 // Pipeline-scoped completion provider with DAG-aware filtering.
 const vscode = require("vscode");
 
-const { findNodeAt, getPositionalArgument, getShortCallName, isCommentNode, isStringNode, matchesCall } = require("../parser/ast");
+const {
+  findAncestor,
+  findNodeAt,
+  getNamedArgument,
+  getPositionalArgument,
+  getShortCallName,
+  isCommentNode,
+  isStringNode,
+  matchesCall
+} = require("../parser/ast");
 const { parseText } = require("../parser/treeSitter");
 const {
+  COMBINE_CALLS,
+  createDirectTargetCalls,
+  MAP_CALLS,
+  QUARTO_CALLS,
   TARGET_LOAD_CALLS,
   TARGET_LOAD_RAW_CALLS,
   TARGET_READ_CALLS,
   TARGET_READ_RAW_CALLS
 } = require("../parser/queries");
+const { extractTargetName } = require("../index/targetFactories");
 const { formatLocation, normalizeFile } = require("../util/paths");
 const { comparePositions, containsPosition, rangeFromNode } = require("../util/ranges");
 const { toVsCodeRange } = require("../util/vscode");
 const { findCompletionRegion } = require("./shared");
 const TAR_MAP_TEMPLATE_COMPLETION_MIN_PREFIX = 2;
+const TRIGGER_KIND_INVOKE = 0;
+const TRIGGER_KIND_TRIGGER_CHARACTER = 1;
 
 function buildAncestorDistanceMap(graph, enclosingTargets) {
   // Rank nearby upstream targets ahead of distant ones.
@@ -72,6 +88,17 @@ function prefixScoreForName(name, prefix) {
   }
 
   return lowered.includes(prefix) ? 1 : 2;
+}
+
+function buildIncompleteCompletionList() {
+  if (typeof vscode.CompletionList === "function") {
+    return new vscode.CompletionList([], true);
+  }
+
+  return {
+    isIncomplete: true,
+    items: []
+  };
 }
 
 function findCallArgumentContext(node, position, callNames) {
@@ -161,6 +188,150 @@ function determineInsertContext(document, position) {
   };
 }
 
+function getConfiguredDirectTargetCalls() {
+  const config = vscode.workspace.getConfiguration("tarborist");
+  const configuredFactories = config.get("additionalSingleTargetFactories", []);
+  return createDirectTargetCalls(Array.isArray(configuredFactories) ? configuredFactories : []);
+}
+
+function getFactoryArguments(callNode) {
+  const explicitNameArgument = getNamedArgument(callNode, "name");
+  const positionalZero = getPositionalArgument(callNode, 0);
+  const positionalOne = getPositionalArgument(callNode, 1);
+  const hasImplicitName = !explicitNameArgument && Boolean(positionalOne);
+
+  return {
+    commandArgument: getNamedArgument(callNode, "command") || (hasImplicitName ? positionalOne : positionalZero),
+    explicitNameArgument: explicitNameArgument || (hasImplicitName ? positionalZero : null),
+    patternArgument: getNamedArgument(callNode, "pattern")
+  };
+}
+
+function getAssignedFactoryName(callNode) {
+  let current = callNode;
+  while (current && current.parent) {
+    const parent = current.parent;
+    if (parent.type === "binary_operator") {
+      const lhs = parent.childForFieldName ? parent.childForFieldName("lhs") : null;
+      const rhs = parent.childForFieldName ? parent.childForFieldName("rhs") : null;
+      const operator = parent.childForFieldName ? parent.childForFieldName("operator") : null;
+      const operatorText = operator ? operator.text : null;
+
+      if ((operatorText === "<-" || operatorText === "=") && rhs === current && lhs && lhs.type === "identifier") {
+        return lhs.text;
+      }
+
+      if ((operatorText === "->" || operatorText === "->>") && lhs === current && rhs && rhs.type === "identifier") {
+        return rhs.text;
+      }
+    }
+
+    if (parent.type === "program" || parent.type === "braced_expression") {
+      break;
+    }
+
+    current = parent;
+  }
+
+  return null;
+}
+
+function pickClosestRegion(matches, liveRange) {
+  if (!matches.length) {
+    return null;
+  }
+
+  return matches.sort((left, right) => {
+    const leftDistance = Math.abs(left.range.start.line - liveRange.start.line) * 1000
+      + Math.abs(left.range.start.character - liveRange.start.character);
+    const rightDistance = Math.abs(right.range.start.line - liveRange.start.line) * 1000
+      + Math.abs(right.range.start.character - liveRange.start.character);
+    return leftDistance - rightDistance;
+  })[0];
+}
+
+function buildLiveRegionFromIndexedMatch(index, file, liveRange, kind, targetName, generated) {
+  if (generated) {
+    const generatedMatches = (index.completionRegions || []).filter((region) => (
+      region.file === file &&
+      region.generated &&
+      region.kind === kind &&
+      region.templateName === targetName
+    ));
+    const matchedGeneratedRegion = pickClosestRegion(generatedMatches, liveRange);
+    if (matchedGeneratedRegion) {
+      return {
+        ...matchedGeneratedRegion,
+        range: liveRange
+      };
+    }
+  }
+
+  const matchedTarget = index.targets.get(targetName);
+  return {
+    enclosingTargets: matchedTarget ? [matchedTarget.name] : [targetName],
+    file,
+    generated: false,
+    kind,
+    range: liveRange
+  };
+}
+
+function resolveLiveCompletionRegion(index, document, position) {
+  const file = normalizeFile(document.uri.fsPath);
+  const point = {
+    character: position.character,
+    line: position.line
+  };
+  const indexedRegion = findCompletionRegion(index, file, point);
+  if (indexedRegion) {
+    return indexedRegion;
+  }
+
+  const tree = parseText(document.getText(), buildProviderParseContext(document, position, "completionProvider"));
+  const node = findNodeAt(tree.rootNode, point);
+  if (!node || isCommentNode(node)) {
+    return null;
+  }
+
+  const directTargetCalls = getConfiguredDirectTargetCalls();
+  const factoryCall = findAncestor(node, (candidate) => {
+    if (!candidate || candidate.type !== "call") {
+      return false;
+    }
+
+    return matchesCall(candidate, directTargetCalls) || matchesCall(candidate, QUARTO_CALLS) || matchesCall(candidate, COMBINE_CALLS);
+  });
+
+  if (!factoryCall) {
+    return null;
+  }
+
+  const { commandArgument, explicitNameArgument, patternArgument } = getFactoryArguments(factoryCall);
+  let kind = null;
+  let liveRange = null;
+
+  if (patternArgument && patternArgument.value && containsPosition(rangeFromNode(patternArgument.value), point)) {
+    kind = "pattern";
+    liveRange = rangeFromNode(patternArgument.value);
+  } else if (commandArgument && commandArgument.value && containsPosition(rangeFromNode(commandArgument.value), point)) {
+    kind = "command";
+    liveRange = rangeFromNode(commandArgument.value);
+  }
+
+  if (!kind || !liveRange) {
+    return null;
+  }
+
+  const targetName = extractTargetName(explicitNameArgument && explicitNameArgument.value) || getAssignedFactoryName(factoryCall);
+  if (!targetName) {
+    return null;
+  }
+
+  const generated = Boolean(findAncestor(factoryCall.parent, (candidate) => candidate.type === "call" && matchesCall(candidate, MAP_CALLS)));
+  return buildLiveRegionFromIndexedMatch(index, file, liveRange, kind, targetName, generated);
+}
+
 function buildTemplateCompletionItems(index, region, options) {
   if (!region.generated || !region.templateGeneratedNames) {
     return {
@@ -204,6 +375,11 @@ function buildTemplateCompletionItems(index, region, options) {
     const sameFileScore = sourceTarget.file === options.file ? 0 : 1;
     const item = new vscode.CompletionItem(templateName, vscode.CompletionItemKind.Reference);
     item.detail = `tar_map template • expands to ${generatedNames.length} target${generatedNames.length === 1 ? "" : "s"} • ${formatLocation(options.root, sourceTarget.file, sourceTarget.nameRange)}`;
+    if (options.prefix && prefixScore > 1) {
+      // Keep truly non-matching targets visible after the user starts typing,
+      // but let natural prefix matches like `lambda` or `beta` rank normally.
+      item.filterText = `${options.prefix} ${templateName}`;
+    }
     item.sortText = [
       prefixScore.toString().padStart(2, "0"),
       sameFileScore.toString().padStart(2, "0"),
@@ -235,7 +411,7 @@ class TargetCompletionProvider {
     this.indexManager = indexManager;
   }
 
-  async provideCompletionItems(document, position) {
+  async provideCompletionItems(document, position, token, context = { triggerKind: TRIGGER_KIND_INVOKE }) {
     try {
       const index = await this.indexManager.getIndexForUri(document.uri);
       if (!index) {
@@ -243,11 +419,7 @@ class TargetCompletionProvider {
       }
 
       const file = normalizeFile(document.uri.fsPath);
-      const point = {
-        character: position.character,
-        line: position.line
-      };
-      const region = findCompletionRegion(index, file, point);
+      const region = resolveLiveCompletionRegion(index, document, position);
       if (!region) {
         return [];
       }
@@ -271,6 +443,14 @@ class TargetCompletionProvider {
       const prefix = extractPrefix(document, position).toLowerCase();
       const root = this.indexManager.getWorkspaceRoot(document.uri);
       const items = [];
+      if (
+        context &&
+        context.triggerKind === TRIGGER_KIND_TRIGGER_CHARACTER &&
+        context.triggerCharacter === "," &&
+        !prefix
+      ) {
+        return buildIncompleteCompletionList();
+      }
       if (region.generated && prefix.length < TAR_MAP_TEMPLATE_COMPLETION_MIN_PREFIX) {
         return [];
       }
@@ -305,6 +485,11 @@ class TargetCompletionProvider {
 
         const item = new vscode.CompletionItem(target.name, vscode.CompletionItemKind.Reference);
         item.detail = `${target.generated ? "generated target via tar_map" : "target"} • ${formatLocation(root, target.file, target.nameRange)} • up ${upstreamCount} • down ${downstreamCount}`;
+        if (prefix && prefixScore > 1) {
+          // Let the editor keep showing valid non-matching targets like `beta`
+          // after typing `a`, while preserving natural matching for close hits.
+          item.filterText = `${prefix} ${target.name}`;
+        }
         item.sortText = [
           prefixScore.toString().padStart(2, "0"),
           sameFileScore.toString().padStart(2, "0"),

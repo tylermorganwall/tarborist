@@ -55,10 +55,11 @@ class WorkspaceIndexManager {
     }
     context.subscriptions.push(this);
 
-    // Re-index on both filesystem events and in-memory editor changes so open
-    // unsaved files still participate in the analysis.
+    // Re-index on filesystem/save events and editor lifecycle changes. Avoid
+    // rebuilding on every keystroke so transient parse states do not wipe out
+    // completion regions or flood diagnostics while the user is typing.
     const onFileEvent = (uri) => this.scheduleRefreshForUri(uri);
-    const onTextDocument = (document) => {
+    const onDocumentLifecycle = (document) => {
       if (document.uri.scheme !== "file") {
         return;
       }
@@ -77,9 +78,9 @@ class WorkspaceIndexManager {
       context.subscriptions.push(watcher);
     }
 
-    context.subscriptions.push(vscode.workspace.onDidChangeTextDocument((event) => onTextDocument(event.document)));
-    context.subscriptions.push(vscode.workspace.onDidCloseTextDocument((document) => onTextDocument(document)));
-    context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(onTextDocument));
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(onFileEvent));
+    context.subscriptions.push(vscode.workspace.onDidCloseTextDocument((document) => onDocumentLifecycle(document)));
+    context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(onDocumentLifecycle));
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void this.refreshAll();
     }));

@@ -28,8 +28,23 @@ function loadCompletionProviderWithMockVscode() {
         this.label = label;
       }
     },
+    CompletionList: class CompletionList {
+      constructor(items, isIncomplete) {
+        this.isIncomplete = isIncomplete;
+        this.items = items;
+      }
+    },
     CompletionItemKind: {
       Reference: 18
+    },
+    workspace: {
+      getConfiguration() {
+        return {
+          get() {
+            return [];
+          }
+        };
+      }
     },
     Range: class Range {
       constructor(startLine, startCharacter, endLine, endCharacter) {
@@ -132,4 +147,186 @@ test("tar_map template completions wait for a two-character prefix", async () =>
 
   assert.deepEqual(noPrefixItems, []);
   assert.ok(twoCharacterItems.some((item) => item.label === "fit_penguins"));
+});
+
+test("comma-triggered completions do not eagerly show all targets without a prefix", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const { index, root } = buildIndex("direct");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(b, a + 1)"));
+  const lineText = text.split("\n")[lineIndex];
+  const positionAfterComma = lineText.indexOf(",") + 1;
+  const positionAfterPrefix = lineText.indexOf("a + 1") + 1;
+  const document = createDocument(text, filePath);
+  const provider = new TargetCompletionProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    },
+    logFailure() {}
+  });
+
+  const automaticItems = await provider.provideCompletionItems(
+    document,
+    {
+      character: positionAfterComma,
+      line: lineIndex
+    },
+    undefined,
+    {
+      triggerCharacter: ",",
+      triggerKind: 1
+    }
+  );
+  const manualItems = await provider.provideCompletionItems(document, {
+    character: positionAfterPrefix,
+    line: lineIndex
+  });
+
+  if (Array.isArray(automaticItems)) {
+    assert.deepEqual(automaticItems, []);
+  } else {
+    assert.deepEqual(automaticItems.items, []);
+    assert.equal(automaticItems.isIncomplete, true);
+  }
+  assert.ok(manualItems.some((item) => item.label === "a"));
+});
+
+test("assigned target lists still provide target completions inside target commands", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const { index, root } = buildIndex("completion_assigned");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + alpha)"));
+  const lineText = text.split("\n")[lineIndex];
+  const position = {
+    character: lineText.indexOf("alpha") + 1,
+    line: lineIndex
+  };
+  const document = createDocument(text, filePath);
+  const provider = new TargetCompletionProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    },
+    logFailure() {}
+  });
+
+  const items = await provider.provideCompletionItems(document, position);
+
+  assert.ok(items.some((item) => item.label === "alpha"));
+  assert.ok(items.some((item) => item.label === "beta"));
+  assert.ok(items.some((item) => item.label === "gamma"));
+});
+
+test("live completions still work after editing past the saved command range", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const { index, root } = buildIndex("completion_live_region");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8").replace(
+    "tar_target(lambda, 3)",
+    "tar_target(lambda, 3 + a)"
+  );
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + a)"));
+  const lineText = text.split("\n")[lineIndex];
+  const position = {
+    character: lineText.indexOf("a)") + 1,
+    line: lineIndex
+  };
+  const document = createDocument(text, filePath);
+  const provider = new TargetCompletionProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    },
+    logFailure() {}
+  });
+
+  const items = await provider.provideCompletionItems(document, position);
+
+  assert.ok(items.some((item) => item.label === "alpha"));
+  assert.ok(items.some((item) => item.label === "beta"));
+  assert.ok(items.some((item) => item.label === "gamma"));
+});
+
+test("typed prefixes keep the full valid target set visible while ranking matches first", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const { index, root } = buildIndex("completion_live_region");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8").replace(
+    "tar_target(lambda, 3)",
+    "tar_target(lambda, 3 + a)"
+  );
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + a)"));
+  const lineText = text.split("\n")[lineIndex];
+  const position = {
+    character: lineText.indexOf("a)") + 1,
+    line: lineIndex
+  };
+  const document = createDocument(text, filePath);
+  const provider = new TargetCompletionProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    },
+    logFailure() {}
+  });
+
+  const items = await provider.provideCompletionItems(document, position);
+  const labels = items.map((item) => item.label);
+
+  assert.ok(labels.includes("alpha"));
+  assert.ok(labels.includes("beta"));
+  assert.ok(labels.includes("gamma"));
+  const alphaItem = items.find((item) => item.label === "alpha");
+  const betaItem = items.find((item) => item.label === "beta");
+  const gammaItem = items.find((item) => item.label === "gamma");
+
+  assert.equal(alphaItem.filterText, undefined);
+  assert.equal(betaItem.filterText, undefined);
+  assert.equal(gammaItem.filterText, undefined);
+});
+
+test("editing another saved target still offers newly typed unrelated targets", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const { index, root } = buildIndex("completion_live_region");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8").replace(
+    "tar_target(alpha, 1)",
+    "tar_target(alpha, 1 + lambda)"
+  );
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(alpha, 1 + lambda)"));
+  const lineText = text.split("\n")[lineIndex];
+  const position = {
+    character: lineText.indexOf("lambda") + 1,
+    line: lineIndex
+  };
+  const document = createDocument(text, filePath);
+  const provider = new TargetCompletionProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    },
+    logFailure() {}
+  });
+
+  const items = await provider.provideCompletionItems(document, position);
+  const labels = items.map((item) => item.label);
+
+  assert.ok(labels.includes("beta"));
+  assert.ok(labels.includes("lambda"));
+  assert.ok(!labels.includes("gamma"));
+  assert.equal(items.find((item) => item.label === "lambda").filterText, undefined);
+  assert.equal(items.find((item) => item.label === "beta").filterText, "l beta");
 });

@@ -673,6 +673,13 @@ function flattenResolvedTargets(value, state) {
   return [];
 }
 
+function isPipelineLikeValue(value) {
+  return Boolean(
+    value &&
+    (value.kind === "TargetList" || value.kind === "TargetObject" || value.kind === "StaticMap")
+  );
+}
+
 function isReferenceLike(node) {
   if (!node || node.type !== "identifier") {
     return false;
@@ -980,7 +987,11 @@ function executeFile(file, state) {
 
   for (const statement of analysis.statements) {
     if (statement.kind === "assignment") {
-      env.set(statement.symbol, resolveTopLevelValue(statement.valueNode, env, state, normalizedFile));
+      const resolved = resolveTopLevelValue(statement.valueNode, env, state, normalizedFile);
+      env.set(statement.symbol, resolved);
+      if (isPipelineLikeValue(resolved)) {
+        lastValue = resolved;
+      }
       continue;
     }
 
