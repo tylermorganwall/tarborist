@@ -306,5 +306,38 @@ test("further-downstream quick-pick payload includes relative update age after t
   const payloadEnd = markdown.indexOf(") |", payloadStart);
   const [payload] = JSON.parse(decodeURIComponent(markdown.slice(payloadStart, payloadEnd)));
   assert.equal(payload.targets[0].name, "z");
-  assert.match(payload.targets[0].description, /^_targets\.R:4 \(not built yet\)$/);
+  assert.match(payload.targets[0].description, /^<1 deep> _targets\.R:4 \(not built yet\)$/);
+});
+
+test("further-downstream quick-pick descriptions include indirect depth labels", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("deep_downstream_hover");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(a, 1)"));
+  const position = { line: lineIndex, character: text.split("\n")[lineIndex].indexOf("(a") + 1 };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+  const markdown = hover.contents[0].value;
+  const commandPrefix = "command:tarborist.showTargetList?";
+  const commandStart = markdown.indexOf(commandPrefix);
+  assert.notEqual(commandStart, -1, "expected a further-downstream quick-pick command link in the hover");
+
+  const payloadStart = commandStart + commandPrefix.length;
+  const payloadEnd = markdown.indexOf(") |", payloadStart);
+  const [payload] = JSON.parse(decodeURIComponent(markdown.slice(payloadStart, payloadEnd)));
+
+  assert.equal(payload.targets[0].name, "c");
+  assert.match(payload.targets[0].description, /^<1 deep> _targets\.R:4$/);
+  assert.equal(payload.targets[1].name, "d");
+  assert.match(payload.targets[1].description, /^<2 deep> _targets\.R:5$/);
 });

@@ -80,6 +80,28 @@ function commandLinkForTarget(target) {
   return `[\`${target.name}\`](command:tarborist.openLocation?${encoded})`;
 }
 
+function buildDownstreamDepthMap(graph, rootTargetName) {
+  const adjacency = graph.upstreamToDownstream || new Map();
+  const depths = new Map([[rootTargetName, 0]]);
+  const queue = [rootTargetName];
+
+  while (queue.length) {
+    const current = queue.shift();
+    const currentDepth = depths.get(current) || 0;
+    for (const downstream of adjacency.get(current) || []) {
+      if (depths.has(downstream)) {
+        continue;
+      }
+
+      depths.set(downstream, currentDepth + 1);
+      queue.push(downstream);
+    }
+  }
+
+  depths.delete(rootTargetName);
+  return depths;
+}
+
 function formatBindings(bindings) {
   const entries = Object.entries(bindings || {});
   if (!entries.length) {
@@ -100,7 +122,7 @@ function formatTargetLinks(index, targetNames) {
   return links.length ? links.join(", ") : "`None`";
 }
 
-function commandLinkForTargetList(index, label, title, targets, root) {
+function commandLinkForTargetList(index, label, title, targets, root, options = {}) {
   if (!targets.length) {
     return `\`${label}\``;
   }
@@ -114,7 +136,9 @@ function commandLinkForTargetList(index, label, title, targets, root) {
         : { file: target.file, range: target.nameRange };
 
       return {
-        description: buildTargetListDescription(index, target, root, destination),
+        description: buildTargetListDescription(index, target, root, destination, {
+          indirectDistance: options.indirectDepths ? options.indirectDepths.get(target.name) : null
+        }),
         file: destination.file,
         name: target.name,
         range: destination.range
@@ -139,7 +163,10 @@ function buildDownstreamSummaryValue(index, root, targetName, directDownstreamTa
     return directValue;
   }
 
-  return `${directValue}, ${commandLinkForTargetList(index, `(+${furtherDownstreamTargets.length} further)`, `Further downstream of ${targetName}`, furtherDownstreamTargets, root)}`;
+  const indirectDepths = buildDownstreamDepthMap(getHoverGraph(index), targetName);
+  return `${directValue}, ${commandLinkForTargetList(index, `(+${furtherDownstreamTargets.length} further)`, `Further downstream of ${targetName}`, furtherDownstreamTargets, root, {
+    indirectDepths
+  })}`;
 }
 
 function buildProviderParseContext(document, position, phase) {
@@ -237,15 +264,23 @@ function formatMetaAge(meta) {
   return `${elapsedDays} ${dayLabel} ago`;
 }
 
-function buildTargetListDescription(index, target, root, destination) {
+function buildTargetListDescription(index, target, root, destination, options = {}) {
   const location = formatLocation(root, destination.file, destination.range);
+  const indirectDistance = options.indirectDistance;
+  const depthPrefix = Number.isFinite(indirectDistance) && indirectDistance >= 2
+    ? `<${indirectDistance - 1} deep> `
+    : "";
   const meta = index.targetsMeta && index.targetsMeta.get(target.name);
   if (meta && !meta.time) {
-    return `${location} (not built yet)`;
+    return `${depthPrefix}${location} (not built yet)`;
   }
 
   const age = formatMetaAge(meta);
-  return age ? `${location} (updated ${age})` : location;
+  const suffixParts = age ? [`updated ${age}`] : [];
+
+  return suffixParts.length
+    ? `${depthPrefix}${location} (${suffixParts.join(", ")})`
+    : `${depthPrefix}${location}`;
 }
 
 function appendTextBlock(markdown, title, text) {
