@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.1] - 2026-04-08
+
+### Changed
+
+- Removed the experimental `tarborist_make()` helper workflow and terminal/console link provider while upstream Positron infrastructure is pursued.
+
 ## [0.6.0] - 2026-04-08
 
 ### Added

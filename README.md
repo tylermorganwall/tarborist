@@ -35,7 +35,6 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - Provides target-aware hover, Go to Definition, Ctrl-click navigation, and import document links
 - Provides pipeline-scoped autocomplete only in valid `targets` regions
 - Shows upstream/downstream info, cue settings, and parallel-related target options in hover text
-- Can install a `tarborist_make()` helper into the active Positron R session so verbose `tar_make()` output becomes clickable in the console
 
 ## Currently supported workflows
 
@@ -54,7 +53,6 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - sourced partial pipelines
 - static target lists built from `list(...)`
 - static target references from bare symbols, `tar_read(...)`, `tar_load(...)`, raw variants when statically obvious, and parameterized Quarto raw-target refs such as `tar_read_raw(params$target_name)`
-- helper-driven `tarborist_make(...)` runs in the active Positron R console session after you install the bundled helper and manifest
 
 ## What it does not do
 
@@ -69,32 +67,12 @@ When static analysis can only recover part of the pipeline, `tarborist` degrades
 
 - `tarborist.additionalSingleTargetFactories`: additional factory names to treat like `tar_target()` during static analysis. Built-in support already includes `tar_file()`, `tar_qs()`, and `tar_skip()`. Use this setting for extra single-target factories such as `tar_parquet()` that preserve the same `name` / `command` / `pattern` shape.
 
-## tarborist_make workflow
-
-Use the helper workflow when you want `targets::tar_make()` output in the Positron console to link back to target definitions:
-
-1. Run `Tarborist: Install tarborist_make() in R session`.
-2. In the active Positron R console, call `tarborist_make(...)`.
-3. After editing the pipeline, optionally run `Tarborist: Update tarborist manifest` before your next build.
-
-`tarborist: Run tarborist_make() in R session` is a convenience command that installs or refreshes the helper and manifest, then runs `tarborist_make()` for you in the active Positron R console.
-
-### Current boundaries
-
-- The helper commands currently target Positron `2026.03.x` and require a Positron build where the runtime API is available to extensions.
-- Linkification is most reliable with `reporter = "verbose"` or `"timestamp"`.
-- Linkification is most reliable with `callr_function = NULL`.
-- Dynamic branch links depend on runtime parent lookup through `targets::tar_progress()`.
-- Plain stdout emitted by downstream user code is not guaranteed to be rewritten.
-- Helper-based rewriting only affects calls made through `tarborist_make(...)`.
-
 ## Typical workflows
 
 1. Hover a target reference to inspect where it is defined and what it depends on.
 2. Ctrl-click or Go to Definition to jump across sourced pipeline files.
 3. Use completions inside `tar_target()` commands and patterns to add upstream targets without creating obvious cycles.
-4. Install `tarborist_make()` in Positron and run it from the console when you want clickable build output.
-5. Read diagnostics when a static cycle or unresolved pipeline fragment is detected.
+4. Read diagnostics when a static cycle or unresolved pipeline fragment is detected.
 
 ## Install in Positron or VS Code
 
