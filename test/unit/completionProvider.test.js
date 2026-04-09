@@ -330,3 +330,69 @@ test("editing another saved target still offers newly typed unrelated targets", 
   assert.equal(items.find((item) => item.label === "lambda").filterText, undefined);
   assert.equal(items.find((item) => item.label === "beta").filterText, "l beta");
 });
+
+test("tar_select_targets() does not shrink the completion target set", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const { index, root } = buildIndex("tar_select_targets");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8").replace(
+    "tar_target(lambda, 3)",
+    "tar_target(lambda, 3 + a)"
+  );
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + a)"));
+  const lineText = text.split("\n")[lineIndex];
+  const position = {
+    character: lineText.indexOf("a)") + 1,
+    line: lineIndex
+  };
+  const document = createDocument(text, filePath);
+  const provider = new TargetCompletionProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    },
+    logFailure() {}
+  });
+
+  const items = await provider.provideCompletionItems(document, position);
+  const labels = items.map((item) => item.label);
+
+  assert.ok(labels.includes("alpha"));
+  assert.ok(labels.includes("beta"));
+  assert.ok(labels.includes("gamma"));
+});
+
+test("completion descendant filtering uses the full available target graph", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const { index, root } = buildIndex("tar_select_targets");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8").replace(
+    "tar_target(alpha, 1)",
+    "tar_target(alpha, 1 + l)"
+  );
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(alpha, 1 + l)"));
+  const lineText = text.split("\n")[lineIndex];
+  const position = {
+    character: lineText.indexOf("l)") + 1,
+    line: lineIndex
+  };
+  const document = createDocument(text, filePath);
+  const provider = new TargetCompletionProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    },
+    logFailure() {}
+  });
+
+  const items = await provider.provideCompletionItems(document, position);
+  const labels = items.map((item) => item.label);
+
+  assert.ok(labels.includes("beta"));
+  assert.ok(labels.includes("lambda"));
+  assert.ok(!labels.includes("gamma"));
+});

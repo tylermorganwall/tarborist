@@ -92,6 +92,35 @@ function collectConcreteTargets(value) {
   return [];
 }
 
+function buildTargetMap(targets) {
+  const map = new Map();
+  for (const target of targets) {
+    if (!target || map.has(target.name)) {
+      continue;
+    }
+
+    map.set(target.name, target);
+  }
+
+  return map;
+}
+
+function collectAvailableTargets(rootRecord) {
+  const targets = [];
+
+  if (rootRecord && rootRecord.lastValue) {
+    targets.push(...collectConcreteTargets(rootRecord.lastValue));
+  }
+
+  if (rootRecord && rootRecord.exportedSymbols) {
+    for (const value of rootRecord.exportedSymbols.values()) {
+      targets.push(...collectConcreteTargets(value));
+    }
+  }
+
+  return buildTargetMap(targets);
+}
+
 function addDiagnostic(state, file, range, severity, message) {
   state.partial = true;
   const fileRecord = state.files.get(file);
@@ -1148,6 +1177,9 @@ function buildStaticWorkspaceIndex(options) {
   // against the actual pipeline target set.
   const refs = extractTargetRefs(targets);
   const graph = buildPipelineGraph(targets, refs);
+  const completionTargets = collectAvailableTargets(rootRecord);
+  const completionRefs = extractTargetRefs(completionTargets);
+  const completionGraph = buildPipelineGraph(completionTargets, completionRefs);
   for (const diagnostic of buildCycleDiagnostics(targets, graph, state.partial)) {
     const fileRecord = state.files.get(diagnostic.file);
     if (fileRecord) {
@@ -1168,7 +1200,10 @@ function buildStaticWorkspaceIndex(options) {
   }
 
   return {
-    completionRegions: buildCompletionRegions(targets, state.generators),
+    completionGraph,
+    completionRefs,
+    completionRegions: buildCompletionRegions(completionTargets, state.generators),
+    completionTargets,
     files: state.files,
     generators: state.generators,
     graph,

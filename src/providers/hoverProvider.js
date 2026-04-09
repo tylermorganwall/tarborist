@@ -7,6 +7,7 @@ const vscode = require("vscode");
 const { findNodeAt, matchesCall, unpackArguments } = require("../parser/ast");
 const { parseText } = require("../parser/treeSitter");
 const { formatLocation, normalizeFile } = require("../util/paths");
+const { containsPosition, rangeLength } = require("../util/ranges");
 const { findGeneratorAtPosition, findTargetAtPosition } = require("./shared");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -20,6 +21,51 @@ function createMarkdown() {
   };
   markdown.supportThemeIcons = true;
   return markdown;
+}
+
+function getHoverTargets(index) {
+  return index.completionTargets || index.targets || new Map();
+}
+
+function getHoverGraph(index) {
+  return index.completionGraph || index.graph;
+}
+
+function pickSmallest(matches) {
+  if (!matches.length) {
+    return null;
+  }
+
+  return matches.sort((left, right) => rangeLength(left.range) - rangeLength(right.range))[0];
+}
+
+function findHoverTargetAtPosition(index, file, position) {
+  const targets = getHoverTargets(index);
+  const directMatches = [];
+  for (const target of targets.values()) {
+    if (target.file === file && containsPosition(target.nameRange, position)) {
+      directMatches.push({
+        range: target.nameRange,
+        target
+      });
+    }
+  }
+
+  const directMatch = pickSmallest(directMatches);
+  if (directMatch) {
+    return directMatch.target;
+  }
+
+  const refs = index.completionRefs || index.refs || [];
+  const refMatches = refs
+    .filter((ref) => !ref.synthetic && ref.file === file && containsPosition(ref.range, position))
+    .map((ref) => ({
+      range: ref.range,
+      target: targets.get(ref.targetName) || null
+    }))
+    .filter((match) => match.target);
+  const refMatch = pickSmallest(refMatches);
+  return refMatch ? refMatch.target : null;
 }
 
 function commandLinkForTarget(target) {
@@ -46,8 +92,9 @@ function formatBindings(bindings) {
 }
 
 function formatTargetLinks(index, targetNames) {
+  const targets = getHoverTargets(index);
   const links = targetNames
-    .map((targetName) => commandLinkForTarget(index.targets.get(targetName)))
+    .map((targetName) => commandLinkForTarget(targets.get(targetName)))
     .filter(Boolean);
 
   return links.length ? links.join(", ") : "`None`";
@@ -323,17 +370,19 @@ function buildTargetHover(index, root, target) {
   // Target hovers are the main navigation surface: show graph info and link
   // related targets directly from the hover body.
   const markdown = createMarkdown();
-  const upstream = [...(index.graph.downstreamToUpstream.get(target.name) || new Set())].sort();
-  const directDownstreamTargets = [...(index.graph.upstreamToDownstream.get(target.name) || new Set())]
+  const hoverTargets = getHoverTargets(index);
+  const hoverGraph = getHoverGraph(index);
+  const disabledInFinalPipeline = !index.targets.has(target.name);
+  const upstream = [...(hoverGraph.downstreamToUpstream.get(target.name) || new Set())].sort();
+  const directDownstreamTargets = [...(hoverGraph.upstreamToDownstream.get(target.name) || new Set())]
     .sort()
-    .map((targetName) => index.targets.get(targetName))
+    .map((targetName) => hoverTargets.get(targetName))
     .filter(Boolean);
   const directDownstreamNames = new Set(directDownstreamTargets.map((downstreamTarget) => downstreamTarget.name));
-  const downstreamTargets = [...(index.graph.descendants.get(target.name) || new Set())]
+  const downstreamTargets = [...(hoverGraph.descendants.get(target.name) || new Set())]
     .sort()
-    .map((targetName) => index.targets.get(targetName))
+    .map((targetName) => hoverTargets.get(targetName))
     .filter(Boolean);
-  const downstreamCount = (index.graph.descendants.get(target.name) || new Set()).size;
   const furtherDownstreamTargets = downstreamTargets.filter((downstreamTarget) => !directDownstreamNames.has(downstreamTarget.name));
   const downstreamSummaryValue = buildDownstreamSummaryValue(index, root, target.name, directDownstreamTargets, furtherDownstreamTargets);
   const targetHeaderLink = commandLinkForTarget(target) || `\`${target.name}\``;
@@ -356,15 +405,15 @@ function buildTargetHover(index, root, target) {
       },
       {
         label: "Siblings",
-        value: (target.generator.generatedNamesPreview || []).length
-          ? target.generator.generatedNamesPreview.map((name) => commandLinkForTarget(index.targets.get(name)) || `\`${name}\``).join(", ")
+          value: (target.generator.generatedNamesPreview || []).length
+          ? target.generator.generatedNamesPreview.map((name) => commandLinkForTarget(hoverTargets.get(name)) || `\`${name}\``).join(", ")
           : "`None`"
       },
       ...buildTargetOptionRows(target),
       ...buildMetaRows(index, target)
     ]);
     appendMetaDetails(markdown, index, target);
-      markdown.appendMarkdown(`\n**Bindings**\n${formatBindings(target.generator.bindings)}\n`);
+    markdown.appendMarkdown(`\n**Bindings**\n${formatBindings(target.generator.bindings)}\n`);
   } else {
     markdown.appendMarkdown(`### $(symbol-field) Target ${targetHeaderLink}\n\n`);
     appendInfoSection(markdown);
@@ -385,6 +434,10 @@ function buildTargetHover(index, root, target) {
       ...buildMetaRows(index, target)
     ]);
     appendMetaDetails(markdown, index, target);
+
+    if (disabledInFinalPipeline) {
+      markdown.appendMarkdown(`\n> $(circle-slash) Disabled in the final pipeline.\n`);
+    }
 
     if (index.partial) {
       markdown.appendMarkdown(`\n> $(warning) Static analysis is partial.\n`);
@@ -413,7 +466,7 @@ class TargetHoverProvider {
         line: position.line
       };
 
-      const target = findTargetAtPosition(index, file, point);
+      const target = findHoverTargetAtPosition(index, file, point) || findTargetAtPosition(index, file, point);
       if (target) {
         return buildTargetHover(index, root, target);
       }
@@ -468,7 +521,7 @@ class TargetHoverProvider {
       if ((generator.generatedNamesPreview || []).length) {
         markdown.appendMarkdown(`\n**Preview**\n`);
         markdown.appendMarkdown(generator.generatedNamesPreview.map((name) => {
-          const generatedTarget = index.targets.get(name);
+          const generatedTarget = getHoverTargets(index).get(name);
           return `- ${commandLinkForTarget(generatedTarget) || `\`${name}\``}`;
         }).join("\n"));
       }

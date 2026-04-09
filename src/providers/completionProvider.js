@@ -58,6 +58,14 @@ function buildAncestorDistanceMap(graph, enclosingTargets) {
   return distances;
 }
 
+function getCompletionTargets(index) {
+  return index.completionTargets || index.targets || new Map();
+}
+
+function getCompletionGraph(index) {
+  return index.completionGraph || index.graph;
+}
+
 function extractPrefix(document, position) {
   const line = document.lineAt(position.line).text.slice(0, position.character);
   const match = line.match(/[A-Za-z0-9_.]+$/);
@@ -251,6 +259,7 @@ function pickClosestRegion(matches, liveRange) {
 }
 
 function buildLiveRegionFromIndexedMatch(index, file, liveRange, kind, targetName, generated) {
+  const completionTargets = getCompletionTargets(index);
   if (generated) {
     const generatedMatches = (index.completionRegions || []).filter((region) => (
       region.file === file &&
@@ -267,7 +276,7 @@ function buildLiveRegionFromIndexedMatch(index, file, liveRange, kind, targetNam
     }
   }
 
-  const matchedTarget = index.targets.get(targetName);
+  const matchedTarget = completionTargets.get(targetName);
   return {
     enclosingTargets: matchedTarget ? [matchedTarget.name] : [targetName],
     file,
@@ -333,6 +342,7 @@ function resolveLiveCompletionRegion(index, document, position) {
 }
 
 function buildTemplateCompletionItems(index, region, options) {
+  const completionTargets = getCompletionTargets(index);
   if (!region.generated || !region.templateGeneratedNames) {
     return {
       coveredGeneratedTargets: new Set(),
@@ -360,7 +370,7 @@ function buildTemplateCompletionItems(index, region, options) {
     }
 
     const sourceTarget = generatedNames
-      .map((generatedName) => index.targets.get(generatedName))
+      .map((generatedName) => completionTargets.get(generatedName))
       .find(Boolean);
     if (!sourceTarget) {
       continue;
@@ -431,15 +441,17 @@ class TargetCompletionProvider {
 
       // Prevent the user from inserting the current target, any existing
       // descendants, and any target already known to be cyclic.
-      const excluded = new Set(index.graph.cyclicTargets || []);
+      const completionTargets = getCompletionTargets(index);
+      const completionGraph = getCompletionGraph(index);
+      const excluded = new Set(completionGraph.cyclicTargets || []);
       for (const targetName of region.enclosingTargets) {
         excluded.add(targetName);
-        for (const descendant of index.graph.descendants.get(targetName) || []) {
+        for (const descendant of completionGraph.descendants.get(targetName) || []) {
           excluded.add(descendant);
         }
       }
 
-      const distances = buildAncestorDistanceMap(index.graph, region.enclosingTargets);
+      const distances = buildAncestorDistanceMap(completionGraph, region.enclosingTargets);
       const prefix = extractPrefix(document, position).toLowerCase();
       const root = this.indexManager.getWorkspaceRoot(document.uri);
       const items = [];
@@ -465,7 +477,7 @@ class TargetCompletionProvider {
 
       items.push(...templateItems.items);
 
-      for (const target of index.targets.values()) {
+      for (const target of completionTargets.values()) {
         if (excluded.has(target.name)) {
           continue;
         }
@@ -480,8 +492,8 @@ class TargetCompletionProvider {
         const sameFileScore = target.file === file ? 0 : 1;
         const generatedScore = target.generated ? 1 : 0;
         const distanceScore = distances.has(target.name) ? distances.get(target.name) : 9999;
-        const upstreamCount = (index.graph.downstreamToUpstream.get(target.name) || new Set()).size;
-        const downstreamCount = (index.graph.descendants.get(target.name) || new Set()).size;
+        const upstreamCount = (completionGraph.downstreamToUpstream.get(target.name) || new Set()).size;
+        const downstreamCount = (completionGraph.descendants.get(target.name) || new Set()).size;
 
         const item = new vscode.CompletionItem(target.name, vscode.CompletionItemKind.Reference);
         item.detail = `${target.generated ? "generated target via tar_map" : "target"} • ${formatLocation(root, target.file, target.nameRange)} • up ${upstreamCount} • down ${downstreamCount}`;
