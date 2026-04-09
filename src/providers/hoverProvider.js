@@ -6,6 +6,7 @@ const vscode = require("vscode");
 
 const { findNodeAt, matchesCall, unpackArguments } = require("../parser/ast");
 const { parseText } = require("../parser/treeSitter");
+const { getTargetDestination } = require("../targetDestination");
 const { formatLocation, normalizeFile } = require("../util/paths");
 const { containsPosition, rangeLength } = require("../util/ranges");
 const { findGeneratorAtPosition, findTargetAtPosition } = require("./shared");
@@ -73,9 +74,7 @@ function commandLinkForTarget(target) {
     return null;
   }
 
-  const payload = target.generated && target.generator
-    ? { file: target.generator.file, range: target.generator.range }
-    : { file: target.file, range: target.nameRange };
+  const payload = getTargetDestination(target);
   const encoded = encodeURIComponent(JSON.stringify([payload]));
   return `[\`${target.name}\`](command:tarborist.openLocation?${encoded})`;
 }
@@ -131,9 +130,7 @@ function commandLinkForTargetList(index, label, title, targets, root, options = 
   // dumping every target directly into the hover.
   const payload = {
     targets: targets.map((target) => {
-      const destination = target.generated && target.generator
-        ? { file: target.generator.file, range: target.generator.range }
-        : { file: target.file, range: target.nameRange };
+      const destination = getTargetDestination(target);
 
       return {
         description: buildTargetListDescription(index, target, root, destination, {

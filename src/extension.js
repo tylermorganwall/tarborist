@@ -2,13 +2,20 @@
 
 // Extension entrypoint: wire the static pipeline index to VS Code/Positron commands
 // and language feature providers.
+let positron = null;
+try {
+  positron = require("positron");
+} catch {}
+
 const vscode = require("vscode");
 
+const { TarboristConsoleLinkProvider } = require("./console/consoleLinkProvider");
 const { WorkspaceIndexManager } = require("./index/workspaceIndex");
 const { TargetCompletionProvider } = require("./providers/completionProvider");
 const { TargetDefinitionProvider } = require("./providers/definitionProvider");
 const { TargetDocumentLinkProvider } = require("./providers/documentLinkProvider");
 const { TargetHoverProvider } = require("./providers/hoverProvider");
+const { createSessionWorkspaceRegistry } = require("./sessionWorkspaceRegistry");
 const { toVsCodeRange } = require("./util/vscode");
 
 const DOCUMENT_SELECTORS = [
@@ -19,6 +26,7 @@ const DOCUMENT_SELECTORS = [
 async function activate(context) {
   const outputChannel = vscode.window.createOutputChannel("tarborist");
   const indexManager = new WorkspaceIndexManager(outputChannel);
+  const sessionWorkspaceRegistry = createSessionWorkspaceRegistry();
   await indexManager.activate(context);
 
   // Hover links and quick-picks hand back file/range payloads to these commands.
@@ -83,6 +91,20 @@ async function activate(context) {
     DOCUMENT_SELECTORS,
     new TargetDocumentLinkProvider(indexManager)
   ));
+
+  if (
+    positron &&
+    positron.window &&
+    typeof positron.window.registerConsoleLinkProvider === "function"
+  ) {
+    context.subscriptions.push(positron.window.registerConsoleLinkProvider(
+      "r",
+      new TarboristConsoleLinkProvider(indexManager, sessionWorkspaceRegistry)
+    ));
+    outputChannel.appendLine("Console link provider registered for Positron R Console.");
+  } else {
+    outputChannel.appendLine("Console link provider API not available; editor links only.");
+  }
 
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider(
     DOCUMENT_SELECTORS,
