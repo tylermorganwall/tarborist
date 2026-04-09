@@ -336,9 +336,10 @@ function buildTargetHover(index, root, target) {
   const downstreamCount = (index.graph.descendants.get(target.name) || new Set()).size;
   const furtherDownstreamTargets = downstreamTargets.filter((downstreamTarget) => !directDownstreamNames.has(downstreamTarget.name));
   const downstreamSummaryValue = buildDownstreamSummaryValue(index, root, target.name, directDownstreamTargets, furtherDownstreamTargets);
+  const targetHeaderLink = commandLinkForTarget(target) || `\`${target.name}\``;
 
   if (target.generated && target.generator) {
-    markdown.appendMarkdown(`### $(symbol-array) Generated target \`${target.name}\`\n\n`);
+    markdown.appendMarkdown(`### $(symbol-array) Generated target ${targetHeaderLink}\n\n`);
     appendInfoSection(markdown);
     appendFieldRows(markdown, [
       {
@@ -363,9 +364,9 @@ function buildTargetHover(index, root, target) {
       ...buildMetaRows(index, target)
     ]);
     appendMetaDetails(markdown, index, target);
-    markdown.appendMarkdown(`\n**Bindings**\n${formatBindings(target.generator.bindings)}\n`);
+      markdown.appendMarkdown(`\n**Bindings**\n${formatBindings(target.generator.bindings)}\n`);
   } else {
-    markdown.appendMarkdown(`### $(symbol-field) Target \`${target.name}\`\n\n`);
+    markdown.appendMarkdown(`### $(symbol-field) Target ${targetHeaderLink}\n\n`);
     appendInfoSection(markdown);
     appendFieldRows(markdown, [
       {

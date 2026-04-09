@@ -150,7 +150,7 @@ test("hovering a tar_combine() alias outside target code uses the target hover",
   const hover = await provider.provideHover(document, position);
   const markdown = hover.contents[0].value;
 
-  assert.match(markdown, /### \$\(symbol-field\) Target `combined`/);
+  assert.match(markdown, /### \$\(symbol-field\) Target \[`combined`\]\(command:tarborist\.openLocation\?.*\)/);
   assert.match(markdown, /`first`/);
   assert.match(markdown, /`second`/);
   assert.doesNotMatch(markdown, /Pipeline object `combined`/);
