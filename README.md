@@ -33,8 +33,9 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - Builds a provisional dependency graph
 - Adds cycle diagnostics for statically detected cycles
 - Provides target-aware hover, Go to Definition, Ctrl-click navigation, and import document links
-- Provides pipeline-scoped autocomplete only in valid `targets` regions
-- Shows upstream/downstream info, cue settings, and parallel-related target options in hover text
+- Provides target-aware autocomplete only in valid target/factory command and pattern regions, including unsaved in-progress edits inside those regions
+- Uses the full statically available target universe for hover and autocomplete, even when helpers such as `tar_select_targets()` trim the final pipeline
+- Shows upstream/downstream info, cue settings, parallel-related target options, disabled-in-final-pipeline status, and indirect downstream depth markers in hover text and related pickers
 
 ## Currently supported workflows
 
@@ -71,7 +72,7 @@ When static analysis can only recover part of the pipeline, `tarborist` degrades
 
 1. Hover a target reference to inspect where it is defined and what it depends on.
 2. Ctrl-click or Go to Definition to jump across sourced pipeline files.
-3. Use completions inside `tar_target()` commands and patterns to add upstream targets without creating obvious cycles.
+3. Use completions inside target/factory commands and patterns to add upstream targets without creating obvious cycles, even when the final pipeline is filtered through helpers such as `tar_select_targets()`.
 4. Read diagnostics when a static cycle or unresolved pipeline fragment is detected.
 
 ## Install in Positron or VS Code

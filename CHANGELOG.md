@@ -5,6 +5,10 @@
 ### Changed
 
 - Removed the experimental `tarborist_make()` helper workflow and terminal/console link provider while upstream Positron infrastructure is pursued.
+- Autocomplete now treats positions inside valid target/factory command bodies as completion regions even after unsaved edits grow past the last saved command range, and it retriggers on common operators such as `+`, `-`, `*`, `/`, `^`, `&`, `|`, `=`, and `%`.
+- Autocomplete now uses the full statically available target universe instead of the final selected pipeline only, so helpers such as `tar_select_targets()` no longer trim the completion set, while downstream filtering still respects the full available DAG.
+- Target hovers now use that same full available target universe, so targets excluded from the final pipeline still show full hover information together with an explicit note that they are disabled in the final pipeline.
+- The hover title now links directly to the hovered target definition, and the further-downstream quick-pick now shows indirect-depth markers such as `<1 deep>` and `<2 deep>` before the file location.
 
 ## [0.6.0] - 2026-04-08
 
