@@ -4,6 +4,7 @@
 // or tar_map() origin.
 const { normalizeFile } = require("../util/paths");
 const { toVsCodeLocation } = require("../util/vscode");
+const { getTargetLocation } = require("../targetLocation");
 const { findTargetAtPosition } = require("./shared");
 
 class TargetDefinitionProvider {
@@ -27,12 +28,8 @@ class TargetDefinitionProvider {
       return null;
     }
 
-    // Generated targets navigate back to the tar_map() call that created them.
-    if (target.generated && target.generator) {
-      return toVsCodeLocation(target.generator.file, target.generator.range);
-    }
-
-    return toVsCodeLocation(target.file, target.nameRange);
+    const location = getTargetLocation(target);
+    return toVsCodeLocation(location.file, location.range);
   }
 }
 

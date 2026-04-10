@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0] - Unreleased
+
+### Added
+
+- Keyboard target navigation through workspace and document symbol providers, so targets can be reached from Go to Symbol in Workspace (`⌘T` / `Ctrl+T`), Go to Symbol in Editor, and the editor outline.
+- Shared target-location handling for symbol, hover, and definition navigation so generated `tar_map()` targets consistently jump back to their generator location.
+- Explicit regression coverage for positional `name, command` parsing in both `tar_target()` and target-like factories.
+- Hover and definition navigation for target references inside `.qmd` and `.Rmd` documents, including parameterized Quarto patterns such as `tar_read_raw(params$raw_data)`.
+- A Positron-only `Targets: tar_load Here` command that loads the target under the cursor or selection into `.GlobalEnv` from valid R target regions.
+
+### Changed
+
+- Target completions now wait for a three-character prefix before showing suggestions, including operator-triggered completion sessions inside valid target command and pattern regions.
+- `Targets: tar_load Here` now resolves only single tarborist-known targets, is keybound only in valid target regions, and submits code to the Positron R console in silent mode so the generated wrapper is not echoed into the console.
+
 ## [0.6.1] - 2026-04-08
 
 ### Changed

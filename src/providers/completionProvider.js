@@ -29,7 +29,8 @@ const { formatLocation, normalizeFile } = require("../util/paths");
 const { comparePositions, containsPosition, rangeFromNode } = require("../util/ranges");
 const { toVsCodeRange } = require("../util/vscode");
 const { findCompletionRegion } = require("./shared");
-const TAR_MAP_TEMPLATE_COMPLETION_MIN_PREFIX = 2;
+const TAR_MAP_TEMPLATE_COMPLETION_MIN_PREFIX = 3;
+const TARGET_COMPLETION_MIN_PREFIX = 3;
 const TRIGGER_KIND_INVOKE = 0;
 const TRIGGER_KIND_TRIGGER_CHARACTER = 1;
 
@@ -107,6 +108,14 @@ function buildIncompleteCompletionList() {
     isIncomplete: true,
     items: []
   };
+}
+
+function shouldDelayTargetCompletions(region, prefix) {
+  if (region.generated) {
+    return prefix.length < TAR_MAP_TEMPLATE_COMPLETION_MIN_PREFIX;
+  }
+
+  return prefix.length < TARGET_COMPLETION_MIN_PREFIX;
 }
 
 function findCallArgumentContext(node, position, callNames) {
@@ -455,16 +464,8 @@ class TargetCompletionProvider {
       const prefix = extractPrefix(document, position).toLowerCase();
       const root = this.indexManager.getWorkspaceRoot(document.uri);
       const items = [];
-      if (
-        context &&
-        context.triggerKind === TRIGGER_KIND_TRIGGER_CHARACTER &&
-        context.triggerCharacter === "," &&
-        !prefix
-      ) {
+      if (shouldDelayTargetCompletions(region, prefix)) {
         return buildIncompleteCompletionList();
-      }
-      if (region.generated && prefix.length < TAR_MAP_TEMPLATE_COMPLETION_MIN_PREFIX) {
-        return [];
       }
       const templateItems = buildTemplateCompletionItems(index, region, {
         distances,

@@ -117,7 +117,7 @@ test.before(async () => {
   await ensureParserReady();
 });
 
-test("tar_map template completions wait for a two-character prefix", async () => {
+test("tar_map template completions wait for a three-character prefix", async () => {
   const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
   const { index, root } = buildIndex("tar_map");
   const filePath = path.join(root, "_targets.R");
@@ -140,24 +140,34 @@ test("tar_map template completions wait for a two-character prefix", async () =>
     character: fitIndex,
     line: lineIndex
   });
-  const twoCharacterItems = await provider.provideCompletionItems(document, {
-    character: fitIndex + 2,
+  const threeCharacterItems = await provider.provideCompletionItems(document, {
+    character: fitIndex + 3,
     line: lineIndex
   });
 
-  assert.deepEqual(noPrefixItems, []);
-  assert.ok(twoCharacterItems.some((item) => item.label === "fit_penguins"));
+  if (Array.isArray(noPrefixItems)) {
+    assert.deepEqual(noPrefixItems, []);
+  } else {
+    assert.deepEqual(noPrefixItems.items, []);
+    assert.equal(noPrefixItems.isIncomplete, true);
+  }
+  assert.ok(threeCharacterItems.some((item) => item.label === "fit_penguins"));
 });
 
-test("comma-triggered completions do not eagerly show all targets without a prefix", async () => {
+test("triggered completions stay incomplete until a three-character prefix is typed", async () => {
   const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
-  const { index, root } = buildIndex("direct");
+  const { index, root } = buildIndex("completion_live_region");
   const filePath = path.join(root, "_targets.R");
-  const text = fs.readFileSync(filePath, "utf8");
-  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(b, a + 1)"));
+  const text = fs.readFileSync(filePath, "utf8").replace(
+    "tar_target(lambda, 3)",
+    "tar_target(lambda, 3 + alp)"
+  );
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + alp)"));
   const lineText = text.split("\n")[lineIndex];
-  const positionAfterComma = lineText.indexOf(",") + 1;
-  const positionAfterPrefix = lineText.indexOf("a + 1") + 1;
+  const positionAfterPlus = lineText.indexOf("+") + 1;
+  const positionAfterOneCharacter = lineText.indexOf("a") + 1;
+  const positionAfterTwoCharacters = lineText.indexOf("al") + 2;
+  const positionAfterThreeCharacters = lineText.indexOf("alp") + 3;
   const document = createDocument(text, filePath);
   const provider = new TargetCompletionProvider({
     async getIndexForUri() {
@@ -169,30 +179,50 @@ test("comma-triggered completions do not eagerly show all targets without a pref
     logFailure() {}
   });
 
-  const automaticItems = await provider.provideCompletionItems(
+  const plusTriggeredItems = await provider.provideCompletionItems(
     document,
     {
-      character: positionAfterComma,
+      character: positionAfterPlus,
       line: lineIndex
     },
     undefined,
     {
-      triggerCharacter: ",",
+      triggerCharacter: "+",
       triggerKind: 1
     }
   );
-  const manualItems = await provider.provideCompletionItems(document, {
-    character: positionAfterPrefix,
+  const oneCharacterItems = await provider.provideCompletionItems(document, {
+    character: positionAfterOneCharacter,
+    line: lineIndex
+  });
+  const twoCharacterItems = await provider.provideCompletionItems(document, {
+    character: positionAfterTwoCharacters,
+    line: lineIndex
+  });
+  const threeCharacterItems = await provider.provideCompletionItems(document, {
+    character: positionAfterThreeCharacters,
     line: lineIndex
   });
 
-  if (Array.isArray(automaticItems)) {
-    assert.deepEqual(automaticItems, []);
+  if (Array.isArray(plusTriggeredItems)) {
+    assert.deepEqual(plusTriggeredItems, []);
   } else {
-    assert.deepEqual(automaticItems.items, []);
-    assert.equal(automaticItems.isIncomplete, true);
+    assert.deepEqual(plusTriggeredItems.items, []);
+    assert.equal(plusTriggeredItems.isIncomplete, true);
   }
-  assert.ok(manualItems.some((item) => item.label === "a"));
+  if (Array.isArray(oneCharacterItems)) {
+    assert.deepEqual(oneCharacterItems, []);
+  } else {
+    assert.deepEqual(oneCharacterItems.items, []);
+    assert.equal(oneCharacterItems.isIncomplete, true);
+  }
+  if (Array.isArray(twoCharacterItems)) {
+    assert.deepEqual(twoCharacterItems, []);
+  } else {
+    assert.deepEqual(twoCharacterItems.items, []);
+    assert.equal(twoCharacterItems.isIncomplete, true);
+  }
+  assert.ok(threeCharacterItems.some((item) => item.label === "alpha"));
 });
 
 test("assigned target lists still provide target completions inside target commands", async () => {
@@ -203,7 +233,7 @@ test("assigned target lists still provide target completions inside target comma
   const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + alpha)"));
   const lineText = text.split("\n")[lineIndex];
   const position = {
-    character: lineText.indexOf("alpha") + 1,
+    character: lineText.indexOf("alpha") + 3,
     line: lineIndex
   };
   const document = createDocument(text, filePath);
@@ -230,12 +260,12 @@ test("live completions still work after editing past the saved command range", a
   const filePath = path.join(root, "_targets.R");
   const text = fs.readFileSync(filePath, "utf8").replace(
     "tar_target(lambda, 3)",
-    "tar_target(lambda, 3 + a)"
+    "tar_target(lambda, 3 + alp)"
   );
-  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + a)"));
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + alp)"));
   const lineText = text.split("\n")[lineIndex];
   const position = {
-    character: lineText.indexOf("a)") + 1,
+    character: lineText.indexOf("alp)") + 3,
     line: lineIndex
   };
   const document = createDocument(text, filePath);
@@ -262,12 +292,12 @@ test("typed prefixes keep the full valid target set visible while ranking matche
   const filePath = path.join(root, "_targets.R");
   const text = fs.readFileSync(filePath, "utf8").replace(
     "tar_target(lambda, 3)",
-    "tar_target(lambda, 3 + a)"
+    "tar_target(lambda, 3 + alp)"
   );
-  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + a)"));
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + alp)"));
   const lineText = text.split("\n")[lineIndex];
   const position = {
-    character: lineText.indexOf("a)") + 1,
+    character: lineText.indexOf("alp)") + 3,
     line: lineIndex
   };
   const document = createDocument(text, filePath);
@@ -292,8 +322,8 @@ test("typed prefixes keep the full valid target set visible while ranking matche
   const gammaItem = items.find((item) => item.label === "gamma");
 
   assert.equal(alphaItem.filterText, undefined);
-  assert.equal(betaItem.filterText, undefined);
-  assert.equal(gammaItem.filterText, undefined);
+  assert.equal(betaItem.filterText, "alp beta");
+  assert.equal(gammaItem.filterText, "alp gamma");
 });
 
 test("editing another saved target still offers newly typed unrelated targets", async () => {
@@ -302,12 +332,12 @@ test("editing another saved target still offers newly typed unrelated targets", 
   const filePath = path.join(root, "_targets.R");
   const text = fs.readFileSync(filePath, "utf8").replace(
     "tar_target(alpha, 1)",
-    "tar_target(alpha, 1 + lambda)"
+    "tar_target(alpha, 1 + lam)"
   );
-  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(alpha, 1 + lambda)"));
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(alpha, 1 + lam)"));
   const lineText = text.split("\n")[lineIndex];
   const position = {
-    character: lineText.indexOf("lambda") + 1,
+    character: lineText.indexOf("lam)") + 3,
     line: lineIndex
   };
   const document = createDocument(text, filePath);
@@ -328,7 +358,7 @@ test("editing another saved target still offers newly typed unrelated targets", 
   assert.ok(labels.includes("lambda"));
   assert.ok(!labels.includes("gamma"));
   assert.equal(items.find((item) => item.label === "lambda").filterText, undefined);
-  assert.equal(items.find((item) => item.label === "beta").filterText, "l beta");
+  assert.equal(items.find((item) => item.label === "beta").filterText, "lam beta");
 });
 
 test("tar_select_targets() does not shrink the completion target set", async () => {
@@ -337,12 +367,12 @@ test("tar_select_targets() does not shrink the completion target set", async () 
   const filePath = path.join(root, "_targets.R");
   const text = fs.readFileSync(filePath, "utf8").replace(
     "tar_target(lambda, 3)",
-    "tar_target(lambda, 3 + a)"
+    "tar_target(lambda, 3 + alp)"
   );
-  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + a)"));
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(lambda, 3 + alp)"));
   const lineText = text.split("\n")[lineIndex];
   const position = {
-    character: lineText.indexOf("a)") + 1,
+    character: lineText.indexOf("alp)") + 3,
     line: lineIndex
   };
   const document = createDocument(text, filePath);
@@ -370,12 +400,12 @@ test("completion descendant filtering uses the full available target graph", asy
   const filePath = path.join(root, "_targets.R");
   const text = fs.readFileSync(filePath, "utf8").replace(
     "tar_target(alpha, 1)",
-    "tar_target(alpha, 1 + l)"
+    "tar_target(alpha, 1 + lam)"
   );
-  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(alpha, 1 + l)"));
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(alpha, 1 + lam)"));
   const lineText = text.split("\n")[lineIndex];
   const position = {
-    character: lineText.indexOf("l)") + 1,
+    character: lineText.indexOf("lam)") + 3,
     line: lineIndex
   };
   const document = createDocument(text, filePath);

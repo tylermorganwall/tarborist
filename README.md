@@ -33,6 +33,7 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - Builds a provisional dependency graph
 - Adds cycle diagnostics for statically detected cycles
 - Provides target-aware hover, Go to Definition, Ctrl-click navigation, and import document links
+- Adds a Positron-only `Targets: tar_load Here` command that loads the target under the cursor or selection into `.GlobalEnv` through the active R console
 - Provides target-aware autocomplete only in valid target/factory command and pattern regions, including unsaved in-progress edits inside those regions
 - Uses the full statically available target universe for hover and autocomplete, even when helpers such as `tar_select_targets()` trim the final pipeline
 - Shows upstream/downstream info, cue settings, parallel-related target options, disabled-in-final-pipeline status, and indirect downstream depth markers in hover text and related pickers
@@ -73,7 +74,17 @@ When static analysis can only recover part of the pipeline, `tarborist` degrades
 1. Hover a target reference to inspect where it is defined and what it depends on.
 2. Ctrl-click or Go to Definition to jump across sourced pipeline files.
 3. Use completions inside target/factory commands and patterns to add upstream targets without creating obvious cycles, even when the final pipeline is filtered through helpers such as `tar_select_targets()`.
-4. Read diagnostics when a static cycle or unresolved pipeline fragment is detected.
+4. In Positron, use `Targets: tar_load Here` to load the hovered/selected target into `.GlobalEnv` from a valid target region without pasting the helper code into the console history.
+5. Read diagnostics when a static cycle or unresolved pipeline fragment is detected.
+
+## Positron command
+
+In Positron, `Targets: tar_load Here` loads a single target into `.GlobalEnv` from the active R editor when the cursor or primary selection is on a tarborist-resolvable target name or reference.
+
+- Default shortcut on macOS: `cmd+alt+shift+l`
+- Default shortcut on Windows and Linux: `ctrl+alt+shift+l`
+- The command is enabled only in valid R target regions
+- Execution is sent through the active Positron R console in silent mode, so the generated `tar_load_raw(...)` wrapper is not echoed into the console
 
 ## Install in Positron or VS Code
 

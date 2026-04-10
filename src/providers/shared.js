@@ -13,19 +13,21 @@ function pickSmallest(matches) {
 }
 
 function findRefAtPosition(index, file, position) {
-  const matches = index.refs.filter((ref) => !ref.synthetic && ref.file === file && containsPosition(ref.range, position));
+  const refs = index.completionRefs || index.refs || [];
+  const matches = refs.filter((ref) => !ref.synthetic && ref.file === file && containsPosition(ref.range, position));
   return pickSmallest(matches);
 }
 
 function findTargetAtPosition(index, file, position) {
-  for (const target of index.targets.values()) {
+  const targets = index.completionTargets || index.targets || new Map();
+  for (const target of targets.values()) {
     if (target.file === file && containsPosition(target.nameRange, position)) {
       return target;
     }
   }
 
   const ref = findRefAtPosition(index, file, position);
-  return ref ? index.targets.get(ref.targetName) || null : null;
+  return ref ? targets.get(ref.targetName) || null : null;
 }
 
 function findGeneratorAtPosition(index, file, position) {

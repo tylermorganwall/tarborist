@@ -5,7 +5,7 @@
   "description": "Static analysis for navigating and debugging complex R targets pipelines",
   "icon": "tarborist.png",
   "license": "GPL-3.0-or-later",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/tylermorganwall/tarborist.git"
@@ -43,6 +43,19 @@
       {
         "command": "tarborist.refreshIndex",
         "title": "tarborist: Refresh Pipeline Index"
+      },
+      {
+        "command": "targetsTools.tarLoadHere",
+        "title": "Targets: tar_load Here",
+        "enablement": "isPositron && tarborist.canTarLoadHere"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "targetsTools.tarLoadHere",
+        "key": "ctrl+alt+shift+l",
+        "mac": "cmd+alt+shift+l",
+        "when": "editorTextFocus && editorLangId == r && isPositron && tarborist.canTarLoadHere"
       }
     ]
   },
@@ -51,6 +64,7 @@
   },
   "dependencies": {
     "@davisvaughan/tree-sitter-r": "^1.2.0",
+    "@posit-dev/positron": "^0.2.0",
     "web-tree-sitter": "^0.26.8"
   },
   "devDependencies": {

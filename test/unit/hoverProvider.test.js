@@ -245,6 +245,30 @@ test("hover still works for targets excluded from the final pipeline", async () 
   assert.match(markdown, /Disabled in the final pipeline/);
 });
 
+test("hover works on target refs inside Quarto params access", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("tar_quarto");
+  const filePath = path.join(root, "report.qmd");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_read_raw(params$raw_data)"));
+  const position = { line: lineIndex, character: text.split("\n")[lineIndex].indexOf("raw_data") + 2 };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+  const markdown = hover.contents[0].value;
+
+  assert.match(markdown, /### \$\(symbol-field\) Target \[`raw_data`\]\(command:tarborist\.openLocation\?.*\)/);
+  assert.match(markdown, /\| \*\*Defined in\*\* \| `_targets\.R:5` \|/);
+});
+
 test("hover shows downstream as direct links plus a further-children quick-pick link", async () => {
   const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
   const { index, root } = buildIndex("downstream_hover");

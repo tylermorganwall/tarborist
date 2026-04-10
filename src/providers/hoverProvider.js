@@ -6,8 +6,9 @@ const vscode = require("vscode");
 
 const { findNodeAt, matchesCall, unpackArguments } = require("../parser/ast");
 const { parseText } = require("../parser/treeSitter");
+const { getTargetLocation } = require("../targetLocation");
 const { formatLocation, normalizeFile } = require("../util/paths");
-const { containsPosition, rangeLength } = require("../util/ranges");
+const { containsPosition } = require("../util/ranges");
 const { findGeneratorAtPosition, findTargetAtPosition } = require("./shared");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -31,51 +32,12 @@ function getHoverGraph(index) {
   return index.completionGraph || index.graph;
 }
 
-function pickSmallest(matches) {
-  if (!matches.length) {
-    return null;
-  }
-
-  return matches.sort((left, right) => rangeLength(left.range) - rangeLength(right.range))[0];
-}
-
-function findHoverTargetAtPosition(index, file, position) {
-  const targets = getHoverTargets(index);
-  const directMatches = [];
-  for (const target of targets.values()) {
-    if (target.file === file && containsPosition(target.nameRange, position)) {
-      directMatches.push({
-        range: target.nameRange,
-        target
-      });
-    }
-  }
-
-  const directMatch = pickSmallest(directMatches);
-  if (directMatch) {
-    return directMatch.target;
-  }
-
-  const refs = index.completionRefs || index.refs || [];
-  const refMatches = refs
-    .filter((ref) => !ref.synthetic && ref.file === file && containsPosition(ref.range, position))
-    .map((ref) => ({
-      range: ref.range,
-      target: targets.get(ref.targetName) || null
-    }))
-    .filter((match) => match.target);
-  const refMatch = pickSmallest(refMatches);
-  return refMatch ? refMatch.target : null;
-}
-
 function commandLinkForTarget(target) {
   if (!target) {
     return null;
   }
 
-  const payload = target.generated && target.generator
-    ? { file: target.generator.file, range: target.generator.range }
-    : { file: target.file, range: target.nameRange };
+  const payload = getTargetLocation(target);
   const encoded = encodeURIComponent(JSON.stringify([payload]));
   return `[\`${target.name}\`](command:tarborist.openLocation?${encoded})`;
 }
@@ -131,9 +93,7 @@ function commandLinkForTargetList(index, label, title, targets, root, options = 
   // dumping every target directly into the hover.
   const payload = {
     targets: targets.map((target) => {
-      const destination = target.generated && target.generator
-        ? { file: target.generator.file, range: target.generator.range }
-        : { file: target.file, range: target.nameRange };
+      const destination = getTargetLocation(target);
 
       return {
         description: buildTargetListDescription(index, target, root, destination, {
@@ -501,7 +461,7 @@ class TargetHoverProvider {
         line: position.line
       };
 
-      const target = findHoverTargetAtPosition(index, file, point) || findTargetAtPosition(index, file, point);
+      const target = findTargetAtPosition(index, file, point);
       if (target) {
         return buildTargetHover(index, root, target);
       }
