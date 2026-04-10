@@ -36,7 +36,9 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - Adds a Positron-only `Targets: tar_load Here` command that loads the target under the cursor or selection into `.GlobalEnv` through the active R console
 - Provides target-aware autocomplete only in valid target/factory command and pattern regions, including unsaved in-progress edits inside those regions
 - Uses the full statically available target universe for hover and autocomplete, even when helpers such as `tar_select_targets()` trim the final pipeline
-- Shows upstream/downstream info, cue settings, parallel-related target options, disabled-in-final-pipeline status, and indirect downstream depth markers in hover text and related pickers
+- Shows upstream/downstream info, cue settings, parallel-related target options, disabled-in-final-pipeline status, build size, build runtime, and indirect downstream depth markers in hover text and related pickers
+- Can optionally color target definition names by build size or runtime using configurable heatmap buckets from `_targets/meta/meta`
+- Emits more specific diagnostics for malformed pipeline `list(...)` entries, including likely missing commas and unsupported target factories
 
 ## Currently supported workflows
 
@@ -68,6 +70,11 @@ When static analysis can only recover part of the pipeline, `tarborist` degrades
 ## Optional settings
 
 - `tarborist.additionalSingleTargetFactories`: additional factory names to treat like `tar_target()` during static analysis. Built-in support already includes `tar_file()`, `tar_qs()`, and `tar_skip()`. Use this setting for extra single-target factories such as `tar_parquet()` that preserve the same `name` / `command` / `pattern` shape.
+- `tarborist.targetHeatmap.enabled`: turn on editor background highlighting for target definition names based on `_targets/meta/meta`.
+- `tarborist.targetHeatmap.metric`: choose whether the heatmap is based on target output `size` or build `runtime`.
+- `tarborist.targetHeatmap.minSizeBytes` / `tarborist.targetHeatmap.minRuntimeSeconds`: minimum values before any heatmap color is applied.
+- `tarborist.targetHeatmap.sizeBreaksBytes` / `tarborist.targetHeatmap.runtimeBreaksSeconds`: ascending breakpoints used to bucket targets into reusable heatmap bands.
+- `tarborist.targetHeatmap.palette`: semi-transparent background colors for the heatmap buckets. 
 
 ## Typical workflows
 

@@ -5,6 +5,7 @@
 const { tryAcquirePositronApi } = require("@posit-dev/positron");
 const vscode = require("vscode");
 
+const { TargetHeatmapController } = require("./decorations/targetHeatmap");
 const { WorkspaceIndexManager } = require("./index/workspaceIndex");
 const { TargetCompletionProvider } = require("./providers/completionProvider");
 const { TargetDefinitionProvider } = require("./providers/definitionProvider");
@@ -130,6 +131,8 @@ async function activate(context) {
   const outputChannel = vscode.window.createOutputChannel("tarborist");
   const indexManager = new WorkspaceIndexManager(outputChannel);
   await indexManager.activate(context);
+  const targetHeatmapController = new TargetHeatmapController(indexManager);
+  context.subscriptions.push(targetHeatmapController);
   registerTarLoadHereCommand(context, indexManager);
 
   // Hover links and quick-picks hand back file/range payloads to these commands.
@@ -177,6 +180,7 @@ async function activate(context) {
     outputChannel.appendLine("Manual refresh requested.");
     await indexManager.refreshAll();
     await updateTarLoadHereContext(indexManager);
+    await targetHeatmapController.refreshVisibleEditors();
   }));
 
   // All providers share the same workspace index manager so they operate on one
@@ -230,6 +234,9 @@ async function activate(context) {
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
     void updateTarLoadHereContext(indexManager, editor);
   }));
+  context.subscriptions.push(vscode.window.onDidChangeVisibleTextEditors(() => {
+    void targetHeatmapController.refreshVisibleEditors();
+  }));
   context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection((event) => {
     if (event.textEditor === vscode.window.activeTextEditor) {
       refreshTarLoadHereContext();
@@ -246,8 +253,19 @@ async function activate(context) {
       setTimeout(refreshTarLoadHereContext, 250);
     }
   }));
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+    if (!event.affectsConfiguration("tarborist.targetHeatmap")) {
+      return;
+    }
+
+    void targetHeatmapController.refreshVisibleEditors();
+  }));
+  context.subscriptions.push(indexManager.onDidRefresh(({ index, root }) => {
+    void targetHeatmapController.refreshEditorsForRoot(root, index);
+  }));
 
   await updateTarLoadHereContext(indexManager);
+  await targetHeatmapController.refreshVisibleEditors();
 }
 
 function deactivate() {}

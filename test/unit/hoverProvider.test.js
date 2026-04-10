@@ -188,6 +188,7 @@ test("hover shows runtime metadata from _targets/meta/meta", async () => {
 
   assert.match(markdown, new RegExp(`${elapsedDays} days ago, 2025-10-10 15:56:12\\.925 UTC`));
   assert.match(markdown, /warning \+ error/);
+  assert.match(markdown, /\| \*\*Runtime\*\* \| `174 ms` \|/);
   assert.match(markdown, /4\.42 KB \(4521 B\)/);
   assert.match(markdown, /\*\*Warnings\*\*/);
   assert.match(markdown, /warning text/);
@@ -217,6 +218,7 @@ test("hover shows not built yet when a meta row exists without a timestamp", asy
 
   assert.match(markdown, /\| \*\*Updated\*\* \| `not built yet` \|/);
   assert.match(markdown, /\| \*\*Status\*\* \| `clean` \|/);
+  assert.match(markdown, /\| \*\*Runtime\*\* \| `101 ms` \|/);
   assert.match(markdown, /\| \*\*Size\*\* \| `128 B` \|/);
 });
 
@@ -364,4 +366,36 @@ test("further-downstream quick-pick descriptions include indirect depth labels",
   assert.match(payload.targets[0].description, /^<1 deep> _targets\.R:4$/);
   assert.equal(payload.targets[1].name, "d");
   assert.match(payload.targets[1].description, /^<2 deep> _targets\.R:5$/);
+});
+
+test("direct-downstream quick-pick descriptions are labeled as direct", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("direct_downstream_hover");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(a, 1)"));
+  const position = { line: lineIndex, character: text.split("\n")[lineIndex].indexOf("(a") + 1 };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+  const markdown = hover.contents[0].value;
+  const commandPrefix = "command:tarborist.showTargetList?";
+  const commandStart = markdown.indexOf(commandPrefix);
+  assert.notEqual(commandStart, -1, "expected a direct-downstream quick-pick command link in the hover");
+
+  const payloadStart = commandStart + commandPrefix.length;
+  const payloadEnd = markdown.indexOf(") |", payloadStart);
+  const [payload] = JSON.parse(decodeURIComponent(markdown.slice(payloadStart, payloadEnd)));
+
+  assert.equal(payload.title, "Direct downstream of a");
+  assert.equal(payload.targets[0].name, "b");
+  assert.match(payload.targets[0].description, /^<direct> _targets\.R:3$/);
 });

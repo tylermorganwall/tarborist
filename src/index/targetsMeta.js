@@ -107,6 +107,45 @@ function normalizeMetaText(value) {
   return value === "" ? null : value;
 }
 
+function formatMetaDuration(rawSeconds) {
+  const seconds = Number(rawSeconds);
+  if (!Number.isFinite(seconds)) {
+    return null;
+  }
+
+  if (seconds < 1) {
+    return `${Math.round(seconds * 1000)} ms`;
+  }
+
+  if (seconds < 10) {
+    return `${seconds.toFixed(2)} s`;
+  }
+
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)} s`;
+  }
+
+  const totalSeconds = Math.round(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  const parts = [];
+
+  if (hours) {
+    parts.push(`${hours} h`);
+  }
+
+  if (minutes) {
+    parts.push(`${minutes} m`);
+  }
+
+  if (remainingSeconds || !parts.length) {
+    parts.push(`${remainingSeconds} s`);
+  }
+
+  return parts.join(" ");
+}
+
 function parseTargetsMeta(text) {
   const lines = text.split(/\r?\n/).filter((line) => line.length);
   if (!lines.length) {
@@ -133,10 +172,13 @@ function parseTargetsMeta(text) {
     const error = normalizeMetaText(row.error);
     metaByTarget.set(row.name, {
       bytes: normalizeMetaText(row.bytes),
+      bytesValue: Number.isFinite(Number(row.bytes)) ? Number(row.bytes) : null,
       error,
       hasError: Boolean(error),
       hasWarnings: Boolean(warnings),
       raw: row,
+      runtime: formatMetaDuration(row.seconds),
+      secondsValue: Number.isFinite(Number(row.seconds)) ? Number(row.seconds) : null,
       size: formatBytes(row.bytes, normalizeMetaText(row.size)),
       time: parsedTime ? parsedTime.formatted : null,
       timestampMs: parsedTime ? parsedTime.timestampMs : null,

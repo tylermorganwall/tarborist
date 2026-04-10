@@ -5,7 +5,7 @@
   "description": "Static analysis for navigating and debugging complex R targets pipelines",
   "icon": "tarborist.png",
   "license": "GPL-3.0-or-later",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/tylermorganwall/tarborist.git"
@@ -36,6 +36,71 @@
             "type": "string"
           },
           "markdownDescription": "Additional `tar_target()`-like factory names to treat as single-target factories during static analysis. Use this only for factories that create exactly one target and follow the same `name` / `command` / `pattern` shape as `tar_target()`, for example `tar_parquet`."
+        },
+        "tarborist.targetHeatmap.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Highlight target definition names with a subtle background color based on `_targets/meta/meta` runtime metadata."
+        },
+        "tarborist.targetHeatmap.metric": {
+          "type": "string",
+          "enum": [
+            "size",
+            "runtime"
+          ],
+          "default": "size",
+          "markdownDescription": "Metric used for target heatmap highlighting: output `size` or build `runtime`."
+        },
+        "tarborist.targetHeatmap.minSizeBytes": {
+          "type": "number",
+          "default": 1024,
+          "minimum": 0,
+          "markdownDescription": "Minimum target output size in bytes before any heatmap color is applied."
+        },
+        "tarborist.targetHeatmap.sizeBreaksBytes": {
+          "type": "array",
+          "default": [
+            10240,
+            102400,
+            1048576
+          ],
+          "items": {
+            "type": "number",
+            "minimum": 0
+          },
+          "markdownDescription": "Ascending target size breakpoints, in bytes, used to bucket heatmap intensity after `tarborist.targetHeatmap.minSizeBytes`."
+        },
+        "tarborist.targetHeatmap.minRuntimeSeconds": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "markdownDescription": "Minimum target runtime in seconds before any heatmap color is applied."
+        },
+        "tarborist.targetHeatmap.runtimeBreaksSeconds": {
+          "type": "array",
+          "default": [
+            5,
+            30,
+            120
+          ],
+          "items": {
+            "type": "number",
+            "minimum": 0
+          },
+          "markdownDescription": "Ascending target runtime breakpoints, in seconds, used to bucket heatmap intensity after `tarborist.targetHeatmap.minRuntimeSeconds`."
+        },
+        "tarborist.targetHeatmap.palette": {
+          "type": "array",
+          "default": [
+            "rgba(255, 157, 0, 0.06)",
+            "rgba(255, 157, 0, 0.12)",
+            "rgba(255, 157, 0, 0.18)",
+            "rgba(255, 157, 0, 0.24)"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "Background colors used for the target heatmap buckets. Keep these subtle and semi-transparent so they coexist with diagnostics and selections."
         }
       }
     },

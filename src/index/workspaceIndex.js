@@ -15,6 +15,8 @@ class WorkspaceIndexManager {
     this.diagnosticCollection = vscode.languages.createDiagnosticCollection("tarborist");
     this.diagnosticFilesByWorkspace = new Map();
     this.indices = new Map();
+    this.indexRefreshEmitter = new vscode.EventEmitter();
+    this.onDidRefresh = this.indexRefreshEmitter.event;
     this.outputChannel = outputChannel;
     this.pendingRefreshes = new Map();
     this.refreshPromises = new Map();
@@ -49,6 +51,7 @@ class WorkspaceIndexManager {
 
   async activate(context) {
     context.subscriptions.push(this.diagnosticCollection);
+    context.subscriptions.push(this.indexRefreshEmitter);
     if (this.outputChannel) {
       context.subscriptions.push(this.outputChannel);
       this.outputChannel.appendLine("tarborist activating.");
@@ -106,6 +109,7 @@ class WorkspaceIndexManager {
 
     this.pendingRefreshes.clear();
     this.diagnosticCollection.dispose();
+    this.indexRefreshEmitter.dispose();
   }
 
   getWorkspaceRoot(uri) {
@@ -215,6 +219,10 @@ class WorkspaceIndexManager {
 
         this.indices.set(root, index);
         this.applyDiagnostics(root, index);
+        this.indexRefreshEmitter.fire({
+          index,
+          root
+        });
 
         if (this.outputChannel) {
           this.outputChannel.appendLine(`Indexed ${index.targets.size} targets from ${root}${index.partial ? " (partial)" : ""}.`);

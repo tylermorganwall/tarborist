@@ -1,6 +1,22 @@
 # Changelog
 
-## [0.7.0] - Unreleased
+## [0.8.0] - 2026-04-10
+
+### Added
+
+- Runtime duration from `_targets/meta/meta` is now shown in target hover metadata.
+- An optional target heatmap that colors target definition names by `_targets/meta/meta` size or runtime using configurable thresholds, breaks, and palette values.
+
+### Changed
+
+- Direct-downstream targets now show a `<direct>` label when they are opened through the hover quick-pick instead of being listed inline.
+- Target hovers no longer show the extra `Target info` section header above the metadata table.
+
+### Fixed
+
+- Pipeline `list(...)` diagnostics are now more specific: tarborist warns about likely missing commas between adjacent items, distinguishes invalid non-target list entries, and names unsupported target factories while pointing to `tarborist.additionalSingleTargetFactories` when appropriate.
+
+## [0.7.0] - 2026-04-10
 
 ### Added
 

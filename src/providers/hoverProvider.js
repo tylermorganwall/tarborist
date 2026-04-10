@@ -97,6 +97,7 @@ function commandLinkForTargetList(index, label, title, targets, root, options = 
 
       return {
         description: buildTargetListDescription(index, target, root, destination, {
+          direct: options.direct === true,
           indirectDistance: options.indirectDepths ? options.indirectDepths.get(target.name) : null
         }),
         file: destination.file,
@@ -117,7 +118,9 @@ function buildDownstreamSummaryValue(index, root, targetName, directDownstreamTa
 
   const directValue = directDownstreamTargets.length <= MAX_INLINE_DIRECT_DOWNSTREAM
     ? directDownstreamTargets.map((downstreamTarget) => commandLinkForTarget(downstreamTarget) || `\`${downstreamTarget.name}\``).join(", ")
-    : commandLinkForTargetList(index, `(${directDownstreamTargets.length})`, `Direct downstream of ${targetName}`, directDownstreamTargets, root);
+    : commandLinkForTargetList(index, `(${directDownstreamTargets.length})`, `Direct downstream of ${targetName}`, directDownstreamTargets, root, {
+      direct: true
+    });
 
   if (!furtherDownstreamTargets.length) {
     return directValue;
@@ -142,8 +145,8 @@ function buildProviderParseContext(document, position, phase) {
   };
 }
 
-function appendInfoSection(markdown, title = "Target info") {
-  markdown.appendMarkdown(`**${title}**\n\n---\n\n`);
+function appendInfoSection(markdown) {
+  markdown.appendMarkdown("---\n\n");
 }
 
 function appendFieldRows(markdown, rows) {
@@ -226,21 +229,22 @@ function formatMetaAge(meta) {
 
 function buildTargetListDescription(index, target, root, destination, options = {}) {
   const location = formatLocation(root, destination.file, destination.range);
+  const directPrefix = options.direct ? "<direct> " : "";
   const indirectDistance = options.indirectDistance;
   const depthPrefix = Number.isFinite(indirectDistance) && indirectDistance >= 2
     ? `<${indirectDistance - 1} deep> `
     : "";
   const meta = index.targetsMeta && index.targetsMeta.get(target.name);
   if (meta && !meta.time) {
-    return `${depthPrefix}${location} (not built yet)`;
+    return `${directPrefix}${depthPrefix}${location} (not built yet)`;
   }
 
   const age = formatMetaAge(meta);
   const suffixParts = age ? [`updated ${age}`] : [];
 
   return suffixParts.length
-    ? `${depthPrefix}${location} (${suffixParts.join(", ")})`
-    : `${depthPrefix}${location}`;
+    ? `${directPrefix}${depthPrefix}${location} (${suffixParts.join(", ")})`
+    : `${directPrefix}${depthPrefix}${location}`;
 }
 
 function appendTextBlock(markdown, title, text) {
@@ -273,6 +277,13 @@ function buildMetaRows(index, target) {
     label: "Status",
     value: buildMetaStatus(meta)
   });
+
+  if (meta.runtime) {
+    rows.push({
+      label: "Runtime",
+      value: `\`${meta.runtime}\``
+    });
+  }
 
   if (meta.size) {
     rows.push({

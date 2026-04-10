@@ -196,6 +196,108 @@ function unwrapExpressionNode(node) {
   return node.type === "braced_expression" ? node : unwrapNode(node);
 }
 
+function getListLintRepresentative(node) {
+  if (!node) {
+    return null;
+  }
+
+  if (node.type === "ERROR") {
+    return node.namedChildren && node.namedChildren.length
+      ? unwrapExpressionNode(node.namedChildren[0])
+      : null;
+  }
+
+  return unwrapExpressionNode(node);
+}
+
+function looksLikePipelineListItem(node) {
+  const current = getListLintRepresentative(node);
+  if (!current) {
+    return false;
+  }
+
+  return current.type === "call"
+    || current.type === "identifier"
+    || current.type === "subset"
+    || current.type === "subset2"
+    || current.type === "namespace_operator";
+}
+
+function addListSyntaxDiagnostics(callNode, state, file) {
+  const argumentsNode = callNode && callNode.childForFieldName
+    ? callNode.childForFieldName("arguments")
+    : null;
+  if (!argumentsNode || !argumentsNode.children) {
+    return;
+  }
+
+  const children = argumentsNode.children.filter((child) => child.type !== "comment");
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
+    if (child.type !== "ERROR" || !looksLikePipelineListItem(child)) {
+      continue;
+    }
+
+    const nextSibling = children.slice(index + 1).find((candidate) => (
+      candidate.type !== "," && candidate.type !== "comma" && candidate.type !== "(" && candidate.type !== ")"
+    ));
+    if (!nextSibling || (nextSibling.type !== "argument" && nextSibling.type !== "ERROR")) {
+      continue;
+    }
+
+    addDiagnostic(
+      state,
+      file,
+      rangeFromNode(getListLintRepresentative(child) || child),
+      "warning",
+      "Static pipeline analysis is partial: possible missing comma after pipeline item in list()"
+    );
+  }
+}
+
+function isValidPipelineListValue(value) {
+  return Boolean(
+    value && (
+      value.kind === "TargetList"
+      || value.kind === "TargetObject"
+      || value.kind === "StaticMap"
+    )
+  );
+}
+
+function resolveListItemValue(argument, env, state, file) {
+  const resolved = resolveTopLevelValue(argument.value, env, state, file);
+  if (isValidPipelineListValue(resolved)) {
+    return resolved;
+  }
+
+  if (resolved && resolved.kind === "Unknown") {
+    const genericUnsupported = resolved.message === "Static pipeline analysis is partial: unsupported expression in pipeline"
+      || resolved.message === "Static pipeline analysis is partial: unsupported empty expression";
+    if (!genericUnsupported) {
+      return resolved;
+    }
+  }
+
+  const current = unwrapNode(argument.value);
+  if (current && current.type === "call") {
+    const callName = getShortCallName(current);
+    if (callName) {
+      return makeUnknown(
+        file,
+        rangeFromNode(argument.value),
+        `Static pipeline analysis is partial: unsupported target factory '${callName}()' in pipeline list; add it to tarborist.additionalSingleTargetFactories if it is single-target and tar_target()-like`
+      );
+    }
+  }
+
+  return makeUnknown(
+    file,
+    rangeFromNode(argument.value),
+    "Static pipeline analysis is partial: list() pipeline items must be target factories, target objects, or pipeline lists"
+  );
+}
+
 function getBinaryOperatorText(node) {
   if (!node || node.type !== "binary_operator") {
     return null;
@@ -631,7 +733,8 @@ function resolveTargetFactoryCall(node, env, state, file, forcedName = null, for
   }
 
   if (matchesCall(current, new Set(["list"]))) {
-    return makeTargetList(unpackArguments(current).map((argument) => resolveTopLevelValue(argument.value, env, state, file)));
+    addListSyntaxDiagnostics(current, state, file);
+    return makeTargetList(unpackArguments(current).map((argument) => resolveListItemValue(argument, env, state, file)));
   }
 
   return makeUnknown(file, rangeFromNode(current), "Static pipeline analysis is partial: unsupported expression in pipeline");

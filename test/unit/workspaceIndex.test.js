@@ -228,12 +228,44 @@ test("ignores trailing comments after the final pipeline expression", () => {
   assert.ok(!diagnostics.some((diagnostic) => diagnostic.message.includes("unsupported expression in pipeline")));
 });
 
+test("warns specifically about missing commas between pipeline list items", () => {
+  const index = buildIndex("missing_pipeline_comma");
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+  const missingComma = diagnostics.find((diagnostic) => diagnostic.message.includes("possible missing comma after pipeline item in list()"));
+
+  assert.equal(index.partial, true);
+  assert.ok(missingComma);
+  assert.equal(missingComma.range.start.line, 1);
+});
+
+test("warns specifically about invalid non-target pipeline list items", () => {
+  const index = buildIndex("invalid_pipeline_item");
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+  const invalidItem = diagnostics.find((diagnostic) => diagnostic.message.includes("list() pipeline items must be target factories, target objects, or pipeline lists"));
+
+  assert.equal(index.partial, true);
+  assert.ok(invalidItem);
+  assert.equal(invalidItem.range.start.line, 2);
+});
+
+test("warns specifically about unsupported target factories in pipeline lists", () => {
+  const index = buildIndex("unsupported_pipeline_factory");
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+  const unsupportedFactory = diagnostics.find((diagnostic) => diagnostic.message.includes("unsupported target factory 'tar_parquet()'"));
+
+  assert.equal(index.partial, true);
+  assert.ok(unsupportedFactory);
+  assert.match(unsupportedFactory.message, /tarborist\.additionalSingleTargetFactories/);
+  assert.equal(unsupportedFactory.range.start.line, 2);
+});
+
 test("reads runtime metadata from _targets/meta/meta", () => {
   const index = buildIndex("meta_hover");
   const meta = index.targetsMeta.get("x");
 
   assert.ok(meta);
   assert.equal(meta.time, "2025-10-10 15:56:12.925 UTC");
+  assert.equal(meta.runtime, "174 ms");
   assert.equal(meta.size, "4.42 KB (4521 B)");
   assert.equal(meta.hasWarnings, true);
   assert.equal(meta.hasError, true);
