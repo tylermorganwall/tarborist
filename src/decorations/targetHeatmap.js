@@ -10,14 +10,21 @@ const DEFAULT_TARGET_HEATMAP_OPTIONS = Object.freeze({
   metric: "size",
   minRuntimeSeconds: 1,
   minSizeBytes: 1024,
+  notBuiltColor: "rgba(156, 132, 255, 0.18)",
   palette: [
-    "rgba(124, 92, 255, 0.07)",
-    "rgba(124, 92, 255, 0.12)",
-    "rgba(124, 92, 255, 0.18)",
-    "rgba(124, 92, 255, 0.26)"
+    "rgba(255, 157, 0, 0.06)",
+    "rgba(255, 157, 0, 0.12)",
+    "rgba(255, 157, 0, 0.18)",
+    "rgba(255, 157, 0, 0.24)"
   ],
   runtimeBreaksSeconds: [5, 30, 120],
   sizeBreaksBytes: [10 * 1024, 100 * 1024, 1024 * 1024]
+});
+const DEFAULT_TARGET_STATUS_DECORATION_OPTIONS = Object.freeze({
+  enabled: true,
+  errorColor: "rgba(220, 38, 38, 0.95)",
+  style: "icon",
+  warningColor: "rgba(234, 179, 8, 0.95)"
 });
 
 function normalizeNumberArray(value, fallback) {
@@ -62,6 +69,8 @@ function getTargetHeatmapOptions(config = vscode.workspace.getConfiguration("tar
     minSizeBytes: Number.isFinite(minSizeBytes) && minSizeBytes >= 0
       ? minSizeBytes
       : DEFAULT_TARGET_HEATMAP_OPTIONS.minSizeBytes,
+    notBuiltColor: String(config.get("targetHeatmap.notBuiltColor", DEFAULT_TARGET_HEATMAP_OPTIONS.notBuiltColor) || "").trim()
+      || DEFAULT_TARGET_HEATMAP_OPTIONS.notBuiltColor,
     palette: normalizePalette(config.get("targetHeatmap.palette", DEFAULT_TARGET_HEATMAP_OPTIONS.palette), DEFAULT_TARGET_HEATMAP_OPTIONS.palette),
     runtimeBreaksSeconds: normalizeNumberArray(
       config.get("targetHeatmap.runtimeBreaksSeconds", DEFAULT_TARGET_HEATMAP_OPTIONS.runtimeBreaksSeconds),
@@ -71,6 +80,20 @@ function getTargetHeatmapOptions(config = vscode.workspace.getConfiguration("tar
       config.get("targetHeatmap.sizeBreaksBytes", DEFAULT_TARGET_HEATMAP_OPTIONS.sizeBreaksBytes),
       DEFAULT_TARGET_HEATMAP_OPTIONS.sizeBreaksBytes
     )
+  };
+}
+
+function getTargetStatusDecorationOptions(config = vscode.workspace.getConfiguration("tarborist")) {
+  const style = config.get("targetStatusDecorations.style", DEFAULT_TARGET_STATUS_DECORATION_OPTIONS.style) === "icon"
+    ? "icon"
+    : "underline";
+  return {
+    enabled: Boolean(config.get("targetStatusDecorations.enabled", DEFAULT_TARGET_STATUS_DECORATION_OPTIONS.enabled)),
+    errorColor: String(config.get("targetStatusDecorations.errorColor", DEFAULT_TARGET_STATUS_DECORATION_OPTIONS.errorColor) || "").trim()
+      || DEFAULT_TARGET_STATUS_DECORATION_OPTIONS.errorColor,
+    style,
+    warningColor: String(config.get("targetStatusDecorations.warningColor", DEFAULT_TARGET_STATUS_DECORATION_OPTIONS.warningColor) || "").trim()
+      || DEFAULT_TARGET_STATUS_DECORATION_OPTIONS.warningColor
   };
 }
 
@@ -110,9 +133,18 @@ function getHeatmapTargets(index) {
   return index.completionTargets || index.targets || new Map();
 }
 
+function isTargetNotBuilt(meta) {
+  return !meta || !meta.time;
+}
+
 function collectTargetHeatmapAssignments(index, filePath, options) {
-  const assignments = new Map();
-  if (!index || !options || !options.enabled) {
+  const assignments = {
+    buckets: new Map(),
+    error: [],
+    notBuilt: [],
+    warning: []
+  };
+  if (!index || !options) {
     return assignments;
   }
 
@@ -122,17 +154,38 @@ function collectTargetHeatmapAssignments(index, filePath, options) {
       continue;
     }
 
-    const metricValue = getTargetHeatmapMetricValue(index.targetsMeta && index.targetsMeta.get(target.name), options.metric);
+    const meta = index.targetsMeta && index.targetsMeta.get(target.name);
+    if (isTargetNotBuilt(meta)) {
+      assignments.notBuilt.push({
+        range: target.nameRange,
+        targetName: target.name
+      });
+      continue;
+    }
+
+    if (meta.hasError) {
+      assignments.error.push({
+        range: target.nameRange,
+        targetName: target.name
+      });
+    } else if (meta.hasWarnings) {
+      assignments.warning.push({
+        range: target.nameRange,
+        targetName: target.name
+      });
+    }
+
+    const metricValue = getTargetHeatmapMetricValue(meta, options.metric);
     const bucket = getTargetHeatmapBucket(metricValue, options);
     if (bucket === null) {
       continue;
     }
 
-    if (!assignments.has(bucket)) {
-      assignments.set(bucket, []);
+    if (!assignments.buckets.has(bucket)) {
+      assignments.buckets.set(bucket, []);
     }
 
-    assignments.get(bucket).push({
+    assignments.buckets.get(bucket).push({
       range: target.nameRange,
       targetName: target.name
     });
@@ -141,11 +194,39 @@ function collectTargetHeatmapAssignments(index, filePath, options) {
   return assignments;
 }
 
+function createStatusDecorationOptions(color, style, iconText) {
+  const baseOptions = {
+    rangeBehavior: vscode.DecorationRangeBehavior
+      ? vscode.DecorationRangeBehavior.ClosedClosed
+      : undefined
+  };
+
+  if (style === "icon") {
+    return {
+      ...baseOptions,
+      after: {
+        color,
+        contentText: iconText,
+        fontSize: "1.05em",
+        margin: "0"
+      }
+    };
+  }
+
+  return {
+    ...baseOptions,
+    textDecoration: `underline wavy ${color}`
+  };
+}
+
 class TargetHeatmapController {
   constructor(indexManager) {
     this.indexManager = indexManager;
     this.decorationKey = "";
+    this.errorDecorationType = null;
+    this.notBuiltDecorationType = null;
     this.decorationTypes = [];
+    this.warningDecorationType = null;
   }
 
   dispose() {
@@ -157,30 +238,84 @@ class TargetHeatmapController {
       decorationType.dispose();
     }
 
+    if (this.notBuiltDecorationType) {
+      this.notBuiltDecorationType.dispose();
+    }
+
+    if (this.errorDecorationType) {
+      this.errorDecorationType.dispose();
+    }
+
+    if (this.warningDecorationType) {
+      this.warningDecorationType.dispose();
+    }
+
     this.decorationTypes = [];
+    this.errorDecorationType = null;
+    this.notBuiltDecorationType = null;
+    this.warningDecorationType = null;
     this.decorationKey = "";
   }
 
-  ensureDecorationTypes(options) {
-    const key = JSON.stringify(options.palette);
+  ensureDecorationTypes(options, statusOptions) {
+    const key = JSON.stringify({
+      notBuiltColor: options.notBuiltColor,
+      palette: options.palette,
+      status: statusOptions
+    });
     if (this.decorationKey === key && this.decorationTypes.length === options.palette.length) {
       return;
     }
 
     this.disposeDecorationTypes();
+    this.notBuiltDecorationType = vscode.window.createTextEditorDecorationType({
+      backgroundColor: options.notBuiltColor,
+      rangeBehavior: vscode.DecorationRangeBehavior
+        ? vscode.DecorationRangeBehavior.ClosedClosed
+        : undefined
+    });
+    this.errorDecorationType = vscode.window.createTextEditorDecorationType(
+      createStatusDecorationOptions(statusOptions.errorColor, statusOptions.style, "\u2716")
+    );
     this.decorationTypes = options.palette.map((backgroundColor) => vscode.window.createTextEditorDecorationType({
       backgroundColor,
       rangeBehavior: vscode.DecorationRangeBehavior
         ? vscode.DecorationRangeBehavior.ClosedClosed
         : undefined
     }));
+    this.warningDecorationType = vscode.window.createTextEditorDecorationType(
+      createStatusDecorationOptions(statusOptions.warningColor, statusOptions.style, "\u25B2")
+    );
     this.decorationKey = key;
   }
 
   clearEditor(editor) {
+    if (this.notBuiltDecorationType) {
+      editor.setDecorations(this.notBuiltDecorationType, []);
+    }
+
+    if (this.errorDecorationType) {
+      editor.setDecorations(this.errorDecorationType, []);
+    }
+
     for (const decorationType of this.decorationTypes) {
       editor.setDecorations(decorationType, []);
     }
+
+    if (this.warningDecorationType) {
+      editor.setDecorations(this.warningDecorationType, []);
+    }
+  }
+
+  getStatusDecorationEntries(assignments, style) {
+    if (style !== "icon") {
+      return assignments.map((assignment) => toVsCodeRange(assignment.range));
+    }
+
+    return assignments.map((assignment) => toVsCodeRange({
+      start: assignment.range.start,
+      end: assignment.range.start
+    }));
   }
 
   async updateEditor(editor, indexOverride = null) {
@@ -188,8 +323,10 @@ class TargetHeatmapController {
       return;
     }
 
-    const options = getTargetHeatmapOptions();
-    if (!options.enabled) {
+    const config = vscode.workspace.getConfiguration("tarborist");
+    const options = getTargetHeatmapOptions(config);
+    const statusOptions = getTargetStatusDecorationOptions(config);
+    if (!options.enabled && !statusOptions.enabled) {
       this.clearEditor(editor);
       return;
     }
@@ -200,11 +337,40 @@ class TargetHeatmapController {
       return;
     }
 
-    this.ensureDecorationTypes(options);
+    this.ensureDecorationTypes(options, statusOptions);
     const assignments = collectTargetHeatmapAssignments(index, editor.document.uri.fsPath, options);
+    if (this.notBuiltDecorationType) {
+      editor.setDecorations(
+        this.notBuiltDecorationType,
+        options.enabled
+          ? assignments.notBuilt.map((assignment) => toVsCodeRange(assignment.range))
+          : []
+      );
+    }
+
+    if (this.errorDecorationType) {
+      editor.setDecorations(
+        this.errorDecorationType,
+        statusOptions.enabled
+          ? this.getStatusDecorationEntries(assignments.error, statusOptions.style)
+          : []
+      );
+    }
+
     for (let bucket = 0; bucket < this.decorationTypes.length; bucket += 1) {
-      const ranges = (assignments.get(bucket) || []).map((assignment) => toVsCodeRange(assignment.range));
+      const ranges = options.enabled
+        ? (assignments.buckets.get(bucket) || []).map((assignment) => toVsCodeRange(assignment.range))
+        : [];
       editor.setDecorations(this.decorationTypes[bucket], ranges);
+    }
+
+    if (this.warningDecorationType) {
+      editor.setDecorations(
+        this.warningDecorationType,
+        statusOptions.enabled
+          ? this.getStatusDecorationEntries(assignments.warning, statusOptions.style)
+          : []
+      );
     }
   }
 
@@ -224,9 +390,13 @@ class TargetHeatmapController {
 
 module.exports = {
   DEFAULT_TARGET_HEATMAP_OPTIONS,
+  DEFAULT_TARGET_STATUS_DECORATION_OPTIONS,
   TargetHeatmapController,
   collectTargetHeatmapAssignments,
+  createStatusDecorationOptions,
   getTargetHeatmapBucket,
   getTargetHeatmapMetricValue,
-  getTargetHeatmapOptions
+  getTargetHeatmapOptions,
+  getTargetStatusDecorationOptions,
+  isTargetNotBuilt
 };

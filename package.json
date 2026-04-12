@@ -5,7 +5,7 @@
   "description": "Static analysis for navigating and debugging complex R targets pipelines",
   "icon": "tarborist.png",
   "license": "GPL-3.0-or-later",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/tylermorganwall/tarborist.git"
@@ -76,6 +76,11 @@
           "minimum": 0,
           "markdownDescription": "Minimum target runtime in seconds before any heatmap color is applied."
         },
+        "tarborist.targetHeatmap.notBuiltColor": {
+          "type": "string",
+          "default": "rgba(156, 132, 255, 0.18)",
+          "markdownDescription": "Background color used for targets that have not been built yet and therefore do not have a build timestamp in `_targets/meta/meta`."
+        },
         "tarborist.targetHeatmap.runtimeBreaksSeconds": {
           "type": "array",
           "default": [
@@ -101,6 +106,30 @@
             "type": "string"
           },
           "markdownDescription": "Background colors used for the target heatmap buckets. Keep these subtle and semi-transparent so they coexist with diagnostics and selections."
+        },
+        "tarborist.targetStatusDecorations.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Mark target definition names when `_targets/meta/meta` reports a warning or error status for the last build."
+        },
+        "tarborist.targetStatusDecorations.style": {
+          "type": "string",
+          "enum": [
+            "underline",
+            "icon"
+          ],
+          "default": "icon",
+          "markdownDescription": "Render target warning/error status as a leading icon before the target name or as a wavy underline."
+        },
+        "tarborist.targetStatusDecorations.errorColor": {
+          "type": "string",
+          "default": "rgba(220, 38, 38, 0.95)",
+          "markdownDescription": "Wavy underline color for targets whose last build recorded an error."
+        },
+        "tarborist.targetStatusDecorations.warningColor": {
+          "type": "string",
+          "default": "rgba(234, 179, 8, 0.95)",
+          "markdownDescription": "Wavy underline color for targets whose last build recorded a warning but not an error."
         }
       }
     },

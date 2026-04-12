@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.0] - 2026-04-11
+
+### Added
+
+- Optional warning/error status decorations for target definition names, including configurable leading `▲` and `✖` icons/wavy colored underlines for targets whose last build recorded a warning or error in `_targets/meta/meta`.
+- A separate configurable `not built yet` heatmap color for targets that have metadata rows but no recorded build timestamp.
+
+
 ## [0.8.0] - 2026-04-10
 
 ### Added

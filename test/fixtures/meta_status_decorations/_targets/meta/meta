@@ -1,0 +1,5 @@
+name|type|data|command|depend|seed|path|time|size|bytes|format|repository|iteration|parent|children|seconds|warnings|error
+warn_only|stem||||||t20371.664038489s|s256b|256|rds|local|vector|||0.101|warning text|
+error_only|stem||||||t20371.664038489s|s512b|512|rds|local|vector|||0.202||error text
+clean_target|stem||||||t20371.664038489s|s128b|128|rds|local|vector|||0.050||
+not_built|stem|||||||s128b|128|rds|local|vector|||0.000||
