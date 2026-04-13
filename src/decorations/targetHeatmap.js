@@ -105,6 +105,10 @@ function getTargetHeatmapMetricValue(meta, metric) {
   return metric === "runtime" ? meta.secondsValue : meta.bytesValue;
 }
 
+function isHeatmapExcludedTarget(meta) {
+  return Boolean(meta && meta.format === "file");
+}
+
 function getTargetHeatmapBucket(metricValue, options) {
   if (!Number.isFinite(metricValue) || !options || !options.enabled || !Array.isArray(options.palette) || !options.palette.length) {
     return null;
@@ -155,24 +159,28 @@ function collectTargetHeatmapAssignments(index, filePath, options) {
     }
 
     const meta = index.targetsMeta && index.targetsMeta.get(target.name);
+    if (meta && meta.hasError) {
+      assignments.error.push({
+        range: target.nameRange,
+        targetName: target.name
+      });
+    } else if (meta && meta.hasWarnings) {
+      assignments.warning.push({
+        range: target.nameRange,
+        targetName: target.name
+      });
+    }
+
+    if (isHeatmapExcludedTarget(meta)) {
+      continue;
+    }
+
     if (isTargetNotBuilt(meta)) {
       assignments.notBuilt.push({
         range: target.nameRange,
         targetName: target.name
       });
       continue;
-    }
-
-    if (meta.hasError) {
-      assignments.error.push({
-        range: target.nameRange,
-        targetName: target.name
-      });
-    } else if (meta.hasWarnings) {
-      assignments.warning.push({
-        range: target.nameRange,
-        targetName: target.name
-      });
     }
 
     const metricValue = getTargetHeatmapMetricValue(meta, options.metric);

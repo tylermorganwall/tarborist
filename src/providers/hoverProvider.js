@@ -287,7 +287,7 @@ function buildMetaRows(index, target) {
 
   if (meta.size) {
     rows.push({
-      label: "Size",
+      label: meta.sizeLabel || "Size",
       value: `\`${meta.size}\``
     });
   }
@@ -458,6 +458,70 @@ class TargetHoverProvider {
     this.indexManager = indexManager;
   }
 
+  async tryBuildHover(index, root, file, document, point) {
+    const target = findTargetAtPosition(index, file, point);
+    if (target) {
+      return buildTargetHover(index, root, target);
+    }
+
+    const wordRange = document.getWordRangeAtPosition(point, /[A-Za-z.][A-Za-z0-9._]*/);
+    const record = index.files.get(file);
+    if (record && wordRange) {
+      const symbol = document.getText(wordRange);
+      const value = record.exportedSymbols.get(symbol);
+      if (value && value.kind === "TargetObject" && value.target) {
+        return buildTargetHover(index, root, value.target);
+      }
+
+      const containedTargets = flattenTargetsFromValue(value);
+      if (containedTargets.length) {
+        const markdown = createMarkdown();
+        markdown.appendMarkdown(`### $(list-flat) Pipeline object \`${symbol}\`\n\n`);
+        markdown.appendMarkdown(`Contains **${containedTargets.length}** target${containedTargets.length === 1 ? "" : "s"}:\n\n`);
+        markdown.appendMarkdown(containedTargets.map((containedTarget) => `- ${commandLinkForTarget(containedTarget) || `\`${containedTarget.name}\``}`).join("\n"));
+        return new vscode.Hover(markdown);
+      }
+    }
+
+    const listTargets = collectTargetsFromListCall(index, file, document, point);
+    if (listTargets.length) {
+      const markdown = createMarkdown();
+      markdown.appendMarkdown(`### $(list-flat) Pipeline list\n\n`);
+      markdown.appendMarkdown(`Contains **${listTargets.length}** target${listTargets.length === 1 ? "" : "s"}:\n\n`);
+      markdown.appendMarkdown(listTargets.map((containedTarget) => `- ${commandLinkForTarget(containedTarget) || `\`${containedTarget.name}\``}`).join("\n"));
+      return new vscode.Hover(markdown);
+    }
+
+    const generator = findGeneratorAtPosition(index, file, point);
+    if (!generator) {
+      return null;
+    }
+
+    const markdown = createMarkdown();
+    markdown.appendMarkdown(`### $(symbol-array) Static \`tar_map()\` expansion\n\n`);
+    appendInfoSection(markdown, "Expansion info");
+    appendFieldRows(markdown, [
+      {
+        label: "Origin",
+        value: `\`${formatLocation(root, generator.file, generator.range)}\``
+      },
+      {
+        label: "Generated targets",
+        value: `\`${generator.count}\``
+      }
+    ]);
+
+    if ((generator.generatedNamesPreview || []).length) {
+      markdown.appendMarkdown(`\n**Preview**\n`);
+      markdown.appendMarkdown(generator.generatedNamesPreview.map((name) => {
+        const generatedTarget = getHoverTargets(index).get(name);
+        return `- ${commandLinkForTarget(generatedTarget) || `\`${name}\``}`;
+      }).join("\n"));
+    }
+
+    return new vscode.Hover(markdown);
+  }
+
   async provideHover(document, position) {
     try {
       const index = await this.indexManager.getIndexForUri(document.uri);
@@ -472,67 +536,7 @@ class TargetHoverProvider {
         line: position.line
       };
 
-      const target = findTargetAtPosition(index, file, point);
-      if (target) {
-        return buildTargetHover(index, root, target);
-      }
-
-      const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z.][A-Za-z0-9._]*/);
-      const record = index.files.get(file);
-      if (record && wordRange) {
-        const symbol = document.getText(wordRange);
-        const value = record.exportedSymbols.get(symbol);
-        if (value && value.kind === "TargetObject" && value.target) {
-          return buildTargetHover(index, root, value.target);
-        }
-
-        const containedTargets = flattenTargetsFromValue(value);
-        if (containedTargets.length) {
-          const markdown = createMarkdown();
-          markdown.appendMarkdown(`### $(list-flat) Pipeline object \`${symbol}\`\n\n`);
-          markdown.appendMarkdown(`Contains **${containedTargets.length}** target${containedTargets.length === 1 ? "" : "s"}:\n\n`);
-          markdown.appendMarkdown(containedTargets.map((containedTarget) => `- ${commandLinkForTarget(containedTarget) || `\`${containedTarget.name}\``}`).join("\n"));
-          return new vscode.Hover(markdown);
-        }
-      }
-
-      const listTargets = collectTargetsFromListCall(index, file, document, point);
-      if (listTargets.length) {
-        const markdown = createMarkdown();
-        markdown.appendMarkdown(`### $(list-flat) Pipeline list\n\n`);
-        markdown.appendMarkdown(`Contains **${listTargets.length}** target${listTargets.length === 1 ? "" : "s"}:\n\n`);
-        markdown.appendMarkdown(listTargets.map((containedTarget) => `- ${commandLinkForTarget(containedTarget) || `\`${containedTarget.name}\``}`).join("\n"));
-        return new vscode.Hover(markdown);
-      }
-
-      const generator = findGeneratorAtPosition(index, file, point);
-      if (!generator) {
-        return null;
-      }
-
-      const markdown = createMarkdown();
-      markdown.appendMarkdown(`### $(symbol-array) Static \`tar_map()\` expansion\n\n`);
-      appendInfoSection(markdown, "Expansion info");
-      appendFieldRows(markdown, [
-        {
-          label: "Origin",
-          value: `\`${formatLocation(root, generator.file, generator.range)}\``
-        },
-        {
-          label: "Generated targets",
-          value: `\`${generator.count}\``
-        }
-      ]);
-
-      if ((generator.generatedNamesPreview || []).length) {
-        markdown.appendMarkdown(`\n**Preview**\n`);
-        markdown.appendMarkdown(generator.generatedNamesPreview.map((name) => {
-          const generatedTarget = getHoverTargets(index).get(name);
-          return `- ${commandLinkForTarget(generatedTarget) || `\`${name}\``}`;
-        }).join("\n"));
-      }
-
-      return new vscode.Hover(markdown);
+      return this.tryBuildHover(index, root, file, document, point);
     } catch (error) {
       this.indexManager.logFailure("Hover provider failed", error, buildProviderParseContext(document, position, "hoverProvider"));
       return null;

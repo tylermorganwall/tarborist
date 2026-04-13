@@ -103,6 +103,10 @@ function formatBytes(bytesValue, rawSize) {
   return `${display} ${units[unitIndex]} (${bytes} B)`;
 }
 
+function getMetaSizeLabel(format) {
+  return format === "file" ? "File size" : "Size";
+}
+
 function normalizeMetaText(value) {
   return value === "" ? null : value;
 }
@@ -170,16 +174,19 @@ function parseTargetsMeta(text) {
     const parsedTime = parseMetaTime(row.time);
     const warnings = normalizeMetaText(row.warnings);
     const error = normalizeMetaText(row.error);
+    const format = normalizeMetaText(row.format);
     metaByTarget.set(row.name, {
       bytes: normalizeMetaText(row.bytes),
       bytesValue: Number.isFinite(Number(row.bytes)) ? Number(row.bytes) : null,
       error,
+      format,
       hasError: Boolean(error),
       hasWarnings: Boolean(warnings),
       raw: row,
       runtime: formatMetaDuration(row.seconds),
       secondsValue: Number.isFinite(Number(row.seconds)) ? Number(row.seconds) : null,
       size: formatBytes(row.bytes, normalizeMetaText(row.size)),
+      sizeLabel: getMetaSizeLabel(format),
       time: parsedTime ? parsedTime.formatted : null,
       timestampMs: parsedTime ? parsedTime.timestampMs : null,
       warnings

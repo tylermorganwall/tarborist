@@ -201,6 +201,38 @@ test("collectTargetHeatmapAssignments() separates warning-only and error targets
   assert.equal(assignments.buckets.size, 0);
 });
 
+test("collectTargetHeatmapAssignments() excludes file-format targets from heatmap backgrounds", () => {
+  const { collectTargetHeatmapAssignments } = loadTargetHeatmapWithMockVscode();
+  const { index, root } = buildIndex("meta_file_hover");
+  const filePath = path.join(root, "_targets.R");
+
+  const sizeAssignments = collectTargetHeatmapAssignments(index, filePath, {
+    enabled: true,
+    metric: "size",
+    minRuntimeSeconds: 0,
+    minSizeBytes: 1,
+    notBuiltColor: "purple",
+    palette: ["c1", "c2"],
+    runtimeBreaksSeconds: [0.1],
+    sizeBreaksBytes: [1024]
+  });
+  const runtimeAssignments = collectTargetHeatmapAssignments(index, filePath, {
+    enabled: true,
+    metric: "runtime",
+    minRuntimeSeconds: 0,
+    minSizeBytes: 1,
+    notBuiltColor: "purple",
+    palette: ["c1", "c2"],
+    runtimeBreaksSeconds: [0.1],
+    sizeBreaksBytes: [1024]
+  });
+
+  assert.equal(sizeAssignments.buckets.size, 0);
+  assert.equal(runtimeAssignments.buckets.size, 0);
+  assert.deepEqual(sizeAssignments.notBuilt, []);
+  assert.deepEqual(runtimeAssignments.notBuilt, []);
+});
+
 test("TargetHeatmapController applies warning/error underline decorations without heatmap backgrounds", async () => {
   const {
     TargetHeatmapController,

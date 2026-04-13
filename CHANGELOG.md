@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1] - 2026-04-13
+
+### Fixed
+
+- File-format targets now show `File size` in hover metadata instead of a generic `Size` label.
+- File-format targets are excluded from heatmap background coloring so tracked files are not treated like in-memory object sizes.
+
 ## [0.9.0] - 2026-04-11
 
 ### Added

@@ -273,6 +273,16 @@ test("reads runtime metadata from _targets/meta/meta", () => {
   assert.equal(meta.error, "error text");
 });
 
+test("labels file-format metadata size as file size", () => {
+  const index = buildIndex("meta_file_hover");
+  const meta = index.targetsMeta.get("report_file");
+
+  assert.ok(meta);
+  assert.equal(meta.format, "file");
+  assert.equal(meta.sizeLabel, "File size");
+  assert.equal(meta.size, "64.0 KB (65536 B)");
+});
+
 test("root partial-analysis diagnostic summarizes the underlying issue locations", () => {
   const index = buildIndex("partial_summary");
   const rootRecord = [...index.files.values()].find((record) => record.file.endsWith(path.join("partial_summary", "_targets.R")));
