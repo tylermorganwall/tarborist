@@ -4,7 +4,18 @@
 
 ### Added
 
-- A Positron-only `Targets: Run Here Without Moving Cursor` command that overrides Cmd/Ctrl+Enter only inside valid targets pipeline regions, runs the current selection or falls back to Positron's normal current-statement execution, and restores the editor cursor and viewport after execution.
+- A Positron-only `Targets: Run Here Without Moving Cursor` command that overrides Cmd/Ctrl+Enter in R editors and uses tarborist's pipeline-region awareness to run code in place.
+- A `tarborist: Organize Pipeline by DAG` command that reorders literal pipeline lists so parent targets stay before their children while preserving original order for dependency ties.
+
+### Changed
+
+- Run-in-place execution now runs the current selection exactly when text is selected, executes the exact target command region for unbraced targets, falls back to Positron's normal statement execution for braced command blocks, refreshes the pipeline index first when the buffer is dirty, and then places the cursor at the end of the current valid command region instead of jumping to the end of the enclosing pipeline list.
+- Run-in-place can now be turned off with `tarborist.executeInPlace.enabled`, which restores Positron's default Cmd/Ctrl+Enter behavior.
+- The downstream hover quick-pick now sorts indirect descendants by child distance first and alphabetically second, and shows those distances as `[+N] target_name` labels.
+
+### Fixed
+
+- Pipeline organization keeps comments immediately above targets attached to the targets they describe, while leaving referenced sub-pipeline objects in place and organizing each literal sub-pipeline according to the targets it actually contains.
 
 ## [0.9.1] - 2026-04-13
 

@@ -7,6 +7,7 @@ const vscode = require("vscode");
 
 const { TargetHeatmapController } = require("./decorations/targetHeatmap");
 const { WorkspaceIndexManager } = require("./index/workspaceIndex");
+const { organizePipelineText } = require("./organizePipeline");
 const { TargetCompletionProvider } = require("./providers/completionProvider");
 const { TargetDefinitionProvider } = require("./providers/definitionProvider");
 const { TargetDocumentSymbolProvider } = require("./providers/documentSymbolProvider");
@@ -210,6 +211,12 @@ function restoreEditorState(editor, snapshot) {
   );
 }
 
+function getFullDocumentRange(document) {
+  const lastLine = Math.max(0, document.lineCount - 1);
+  const lastCharacter = document.lineAt(lastLine).text.length;
+  return new vscode.Range(0, 0, lastLine, lastCharacter);
+}
+
 function getRegionEndSelection(region, selection) {
   if (!region || !selection || selectionIsNonEmpty(selection)) {
     return null;
@@ -346,6 +353,53 @@ function registerExecuteInPlaceCommand(context, indexManager) {
   return disposable;
 }
 
+function registerOrganizePipelineCommand(context, indexManager, targetHeatmapController) {
+  const disposable = vscode.commands.registerTextEditorCommand(
+    "tarborist.organizePipeline",
+    async (editor) => {
+      if (!editor || !editor.document || editor.document.languageId !== "r") {
+        await vscode.window.showErrorMessage("This command only works in R files.");
+        return;
+      }
+
+      await refreshIndexForEditor(editor, indexManager);
+      const root = indexManager.getPipelineRootForUri(editor.document.uri);
+      if (root) {
+        await indexManager.refreshWorkspace(root);
+      }
+
+      const index = await indexManager.getIndexForUri(editor.document.uri);
+      if (!index) {
+        await vscode.window.showErrorMessage("No targets pipeline was found for the active document.");
+        return;
+      }
+
+      const result = await organizePipelineText({
+        file: normalizeFile(editor.document.uri.fsPath),
+        index,
+        text: editor.document.getText()
+      });
+
+      if (!result.changed) {
+        return;
+      }
+
+      await editor.edit((editBuilder) => {
+        editBuilder.replace(getFullDocumentRange(editor.document), result.text);
+      });
+
+      if (root) {
+        await indexManager.refreshWorkspace(root);
+      }
+      await updateTarLoadHereContext(indexManager, editor);
+      await updateExecuteInPlaceContext(indexManager, editor);
+      await targetHeatmapController.refreshVisibleEditors();
+    }
+  );
+  context.subscriptions.push(disposable);
+  return disposable;
+}
+
 async function activate(context) {
   const outputChannel = vscode.window.createOutputChannel("tarborist");
   const indexManager = new WorkspaceIndexManager(outputChannel);
@@ -354,6 +408,7 @@ async function activate(context) {
   context.subscriptions.push(targetHeatmapController);
   registerTarLoadHereCommand(context, indexManager);
   registerExecuteInPlaceCommand(context, indexManager);
+  registerOrganizePipelineCommand(context, indexManager, targetHeatmapController);
 
   // Hover links and quick-picks hand back file/range payloads to these commands.
   context.subscriptions.push(vscode.commands.registerCommand("tarborist.openLocation", async (payload) => {
@@ -510,7 +565,9 @@ module.exports = {
   executeInPlace,
   executeTarLoadHere,
   getSelectedOrCurrentTarget,
+  getFullDocumentRange,
   registerExecuteInPlaceCommand,
+  registerOrganizePipelineCommand,
   registerTarLoadHereCommand,
   rString,
   TAR_LOAD_HERE_CONTEXT_KEY,

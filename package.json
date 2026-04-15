@@ -144,6 +144,10 @@
         "title": "tarborist: Refresh Pipeline Index"
       },
       {
+        "command": "tarborist.organizePipeline",
+        "title": "tarborist: Organize Pipeline by DAG"
+      },
+      {
         "command": "targetsTools.executeInPlace",
         "title": "Targets: Run Here Without Moving Cursor",
         "enablement": "isPositron && editorLangId == r && config.tarborist.executeInPlace.enabled"

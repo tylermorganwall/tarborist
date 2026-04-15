@@ -1,0 +1,125 @@
+"use strict";
+
+const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const test = require("node:test");
+
+const { buildStaticWorkspaceIndex } = require("../../src/index/pipelineResolver");
+const { organizePipelineText } = require("../../src/organizePipeline");
+const { ensureParserReady } = require("../../src/parser/treeSitter");
+
+function buildIndexFromText(text) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tarborist-organize-"));
+  const rootFile = path.join(root, "_targets.R");
+  fs.writeFileSync(rootFile, text, "utf8");
+
+  return {
+    file: rootFile,
+    index: buildStaticWorkspaceIndex({
+      readFile(file) {
+        if (path.resolve(file) === path.resolve(rootFile)) {
+          return text;
+        }
+
+        throw new Error(`Unexpected read: ${file}`);
+      },
+      workspaceRoot: root
+    })
+  };
+}
+
+test.before(async () => {
+  await ensureParserReady();
+});
+
+test("organizePipelineText() reorders targets by DAG while preserving comments and fixed sub-pipeline references", async () => {
+  const input = [
+    "part <- list(",
+    "  # beta comment",
+    "  tar_target(beta, alpha + 1),",
+    "",
+    "  # alpha comment",
+    "  tar_target(alpha, 1)",
+    ")",
+    "",
+    "other_part <- list(",
+    "  tar_target(omega, 1)",
+    ")",
+    "",
+    "list(",
+    "  part,",
+    "  # delta comment",
+    "  tar_target(delta, gamma + 1),",
+    "",
+    "  # gamma comment",
+    "  tar_target(gamma, 1),",
+    "  other_part",
+    ")",
+    ""
+  ].join("\n");
+  const expected = [
+    "part <- list(",
+    "  # alpha comment",
+    "  tar_target(alpha, 1),",
+    "",
+    "  # beta comment",
+    "  tar_target(beta, alpha + 1)",
+    ")",
+    "",
+    "other_part <- list(",
+    "  tar_target(omega, 1)",
+    ")",
+    "",
+    "list(",
+    "  part,",
+    "  # gamma comment",
+    "  tar_target(gamma, 1),",
+    "",
+    "  # delta comment",
+    "  tar_target(delta, gamma + 1),",
+    "  other_part",
+    ")",
+    ""
+  ].join("\n");
+  const { file, index } = buildIndexFromText(input);
+
+  const result = await organizePipelineText({
+    file,
+    index,
+    text: input
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.text, expected);
+});
+
+test("organizePipelineText() preserves original order for dependency ties", async () => {
+  const input = [
+    "list(",
+    "  tar_target(gamma, alpha + 1),",
+    "  tar_target(beta, 1),",
+    "  tar_target(alpha, 1)",
+    ")",
+    ""
+  ].join("\n");
+  const expected = [
+    "list(",
+    "  tar_target(beta, 1),",
+    "  tar_target(alpha, 1),",
+    "  tar_target(gamma, alpha + 1)",
+    ")",
+    ""
+  ].join("\n");
+  const { file, index } = buildIndexFromText(input);
+
+  const result = await organizePipelineText({
+    file,
+    index,
+    text: input
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.text, expected);
+});
