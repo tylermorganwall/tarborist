@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.10.0] - 2026-04-14
+
+### Added
+
+- A Positron-only `Targets: Run Here Without Moving Cursor` command that overrides Cmd/Ctrl+Enter only inside valid targets pipeline regions, runs the current selection or falls back to Positron's normal current-statement execution, and restores the editor cursor and viewport after execution.
+
 ## [0.9.1] - 2026-04-13
 
 ### Fixed

@@ -11,6 +11,13 @@ function makeRange(startCharacter, endCharacter) {
   };
 }
 
+function makeLineRange(startLine, startCharacter, endLine, endCharacter) {
+  return {
+    start: { line: startLine, character: startCharacter },
+    end: { line: endLine, character: endCharacter }
+  };
+}
+
 function makeTarget(name, filePath, startCharacter, endCharacter) {
   return {
     file: filePath,
@@ -20,12 +27,28 @@ function makeTarget(name, filePath, startCharacter, endCharacter) {
 }
 
 function createEditor(lineText, options = {}) {
+  const lines = lineText.split("\n");
+  const positionToOffset = (position) => {
+    let offset = 0;
+    for (let line = 0; line < position.line; line += 1) {
+      offset += lines[line].length + 1;
+    }
+    return offset + position.character;
+  };
   const selectionStart = options.selectionStart ?? options.cursor ?? 0;
   const selectionEnd = options.selectionEnd ?? options.cursor ?? selectionStart;
   const cursor = options.cursor ?? selectionEnd;
   const filePath = options.filePath || "/tmp/_targets.R";
+  const selection = {
+    anchor: { line: 0, character: selectionStart },
+    start: { line: 0, character: selectionStart },
+    end: { line: 0, character: selectionEnd },
+    active: { line: 0, character: cursor }
+  };
+  const visibleRange = options.visibleRange || makeRange(0, lineText.length);
 
   const document = {
+    isDirty: Boolean(options.isDirty),
     languageId: options.languageId || "r",
     uri: {
       fsPath: filePath
@@ -34,31 +57,49 @@ function createEditor(lineText, options = {}) {
       if (!range) {
         return lineText;
       }
-
-      return lineText.slice(range.start.character, range.end.character);
+      return lineText.slice(positionToOffset(range.start), positionToOffset(range.end));
+    },
+    lineAt(line) {
+      return {
+        text: lines[line]
+      };
     }
   };
 
   return {
     document,
-    selection: {
-      start: { line: 0, character: selectionStart },
-      end: { line: 0, character: selectionEnd },
-      active: { line: 0, character: cursor }
-    }
+    revealCalls: [],
+    revealRange(range, revealType) {
+      this.revealCalls.push({ range, revealType });
+    },
+    selection,
+    selections: [selection],
+    visibleRanges: options.visibleRanges || [visibleRange]
   };
 }
 
 function createIndexManager(index) {
+  let currentIndex = index;
+
   return {
+    getPipelineRootForUri(uri) {
+      return uri && uri.fsPath ? uri.fsPath.replace(/\/_targets\.R$/i, "") : null;
+    },
     async getIndexForUri() {
-      return index;
+      return currentIndex;
+    },
+    async refreshWorkspace() {
+      return currentIndex;
+    },
+    setIndex(nextIndex) {
+      currentIndex = nextIndex;
     }
   };
 }
 
 function createIndex(options = {}) {
   return {
+    completionRegions: options.completionRegions || [],
     completionRefs: options.completionRefs || [],
     completionTargets: options.completionTargets || new Map(),
     refs: options.refs || [],
@@ -71,9 +112,32 @@ function loadExtensionWithMocks(options = {}) {
   const executeCommandCalls = [];
   const registeredTextEditorCommands = [];
   const mockVscode = {
+    Range: class Range {
+      constructor(startLine, startCharacter, endLine, endCharacter) {
+        this.start = { line: startLine, character: startCharacter };
+        this.end = { line: endLine, character: endCharacter };
+      }
+    },
+    Selection: class Selection {
+      constructor(anchorLine, anchorCharacter, activeLine, activeCharacter) {
+        this.anchor = { line: anchorLine, character: anchorCharacter };
+        this.active = { line: activeLine, character: activeCharacter };
+        this.start = this.anchor.line < this.active.line || (this.anchor.line === this.active.line && this.anchor.character <= this.active.character)
+          ? this.anchor
+          : this.active;
+        this.end = this.start === this.anchor ? this.active : this.anchor;
+      }
+    },
+    TextEditorRevealType: {
+      AtTop: "atTop",
+      InCenterIfOutsideViewport: "inCenterIfOutsideViewport"
+    },
     commands: {
       async executeCommand(command, ...args) {
         executeCommandCalls.push({ args, command });
+        if (typeof options.executeCommandImpl === "function") {
+          return options.executeCommandImpl(command, ...args);
+        }
       },
       registerTextEditorCommand(command, handler) {
         const disposable = {
@@ -400,5 +464,240 @@ test("registerTarLoadHereCommand() uses a text editor command registration", () 
 
   assert.equal(registeredTextEditorCommands.length, 1);
   assert.equal(registeredTextEditorCommands[0].command, "targetsTools.tarLoadHere");
+  assert.equal(context.subscriptions[0], disposable);
+});
+
+test("updateExecuteInPlaceContext() enables the context key for valid completion regions", async () => {
+  const activeTextEditor = createEditor("tar_target(beta, alpha + 1)", {
+    cursor: 20,
+    filePath: "/tmp/_targets.R"
+  });
+  const { EXECUTE_IN_PLACE_CONTEXT_KEY, executeCommandCalls, updateExecuteInPlaceContext } = loadExtensionWithMocks({
+    activeTextEditor
+  });
+  const indexManager = createIndexManager(createIndex({
+    completionRegions: [{
+      file: "/tmp/_targets.R",
+      range: makeRange(17, 26)
+    }]
+  }));
+
+  const enabled = await updateExecuteInPlaceContext(indexManager, activeTextEditor);
+
+  assert.equal(enabled, true);
+  assert.deepEqual(executeCommandCalls, [{
+    args: [EXECUTE_IN_PLACE_CONTEXT_KEY, true],
+    command: "setContext"
+  }]);
+});
+
+test("updateExecuteInPlaceContext() clears the context key outside valid completion regions", async () => {
+  const activeTextEditor = createEditor("x <- 1", {
+    cursor: 2,
+    filePath: "/tmp/_targets.R"
+  });
+  const { EXECUTE_IN_PLACE_CONTEXT_KEY, executeCommandCalls, updateExecuteInPlaceContext } = loadExtensionWithMocks({
+    activeTextEditor
+  });
+  const indexManager = createIndexManager(createIndex());
+
+  const enabled = await updateExecuteInPlaceContext(indexManager, activeTextEditor);
+
+  assert.equal(enabled, false);
+  assert.deepEqual(executeCommandCalls, [{
+    args: [EXECUTE_IN_PLACE_CONTEXT_KEY, false],
+    command: "setContext"
+  }]);
+});
+
+test("executeInPlace() runs the current selection and restores cursor and viewport", async () => {
+  const editor = createEditor("alpha + beta", {
+    selectionStart: 0,
+    selectionEnd: 5,
+    cursor: 5,
+    filePath: "/tmp/_targets.R",
+    visibleRange: makeRange(0, 12)
+  });
+  const { executeCommandCalls, executeInPlace } = loadExtensionWithMocks({
+    positronApi: {},
+    executeCommandImpl: async () => {}
+  });
+  const indexManager = createIndexManager(createIndex({
+    completionRegions: [{
+      file: "/tmp/_targets.R",
+      range: makeRange(0, 12)
+    }]
+  }));
+
+  const succeeded = await executeInPlace(editor, indexManager);
+
+  assert.equal(succeeded, true);
+  assert.deepEqual(executeCommandCalls, [{
+    args: [{
+      code: "alpha",
+      focus: false,
+      langId: "r"
+    }],
+    command: "workbench.action.executeCode.console"
+  }]);
+  assert.equal(editor.selection.start.character, 0);
+  assert.equal(editor.selection.end.character, 5);
+  assert.equal(editor.revealCalls[0].revealType, "atTop");
+});
+
+test("executeInPlace() runs the exact unbraced completion region and moves to the region end", async () => {
+  const editor = createEditor("alpha + beta, tail", {
+    cursor: 8,
+    filePath: "/tmp/_targets.R",
+    visibleRange: makeRange(0, 18)
+  });
+  editor.selection = {
+    anchor: { line: 0, character: 8 },
+    active: { line: 0, character: 8 },
+    start: { line: 0, character: 8 },
+    end: { line: 0, character: 8 }
+  };
+  editor.selections = [editor.selection];
+  const { executeCommandCalls, executeInPlace } = loadExtensionWithMocks({
+    positronApi: {},
+    executeCommandImpl: async () => {}
+  });
+  const indexManager = createIndexManager(createIndex({
+    completionRegions: [{
+      file: "/tmp/_targets.R",
+      range: makeRange(0, 12)
+    }]
+  }));
+
+  const succeeded = await executeInPlace(editor, indexManager);
+
+  assert.equal(succeeded, true);
+  assert.deepEqual(executeCommandCalls, [{
+    args: [{
+      code: "alpha + beta",
+      focus: false,
+      langId: "r"
+    }],
+    command: "workbench.action.executeCode.console"
+  }]);
+  assert.equal(editor.selection.active.line, 0);
+  assert.equal(editor.selection.active.character, 12);
+  assert.equal(editor.revealCalls[0].revealType, "inCenterIfOutsideViewport");
+});
+
+test("executeInPlace() uses Positron's current-statement execution for braced regions and moves to the region end", async () => {
+  const editor = createEditor("{\nalpha + beta\n}", {
+    cursor: 8,
+    filePath: "/tmp/_targets.R",
+    visibleRange: makeLineRange(0, 0, 2, 1)
+  });
+  editor.selection = {
+    anchor: { line: 0, character: 0 },
+    active: { line: 0, character: 0 },
+    start: { line: 0, character: 0 },
+    end: { line: 0, character: 0 }
+  };
+  editor.selections = [editor.selection];
+  const { executeCommandCalls, executeInPlace } = loadExtensionWithMocks({
+    positronApi: {},
+    executeCommandImpl: async () => {}
+  });
+  const indexManager = createIndexManager(createIndex({
+    completionRegions: [{
+      file: "/tmp/_targets.R",
+      range: makeLineRange(0, 0, 2, 1)
+    }]
+  }));
+
+  const succeeded = await executeInPlace(editor, indexManager);
+
+  assert.equal(succeeded, true);
+  assert.deepEqual(executeCommandCalls, [{
+    args: [],
+    command: "workbench.action.positronConsole.executeCodeWithoutAdvancing"
+  }]);
+  assert.equal(editor.selection.active.line, 2);
+  assert.equal(editor.selection.active.character, 1);
+  assert.equal(editor.revealCalls[0].revealType, "inCenterIfOutsideViewport");
+});
+
+test("executeInPlace() refreshes dirty documents before resolving the execution region", async () => {
+  const editor = createEditor("engineer_features(raw_medium, sleep = 0.9)", {
+    cursor: 10,
+    filePath: "/tmp/_targets.R",
+    isDirty: true,
+    visibleRange: makeRange(0, 42)
+  });
+  editor.selection = {
+    anchor: { line: 0, character: 10 },
+    active: { line: 0, character: 10 },
+    start: { line: 0, character: 10 },
+    end: { line: 0, character: 10 }
+  };
+  editor.selections = [editor.selection];
+  const { executeCommandCalls, executeInPlace } = loadExtensionWithMocks({
+    positronApi: {},
+    executeCommandImpl: async () => {}
+  });
+  const staleIndex = createIndex();
+  const freshIndex = createIndex({
+    completionRegions: [{
+      file: "/tmp/_targets.R",
+      range: makeRange(0, 42)
+    }]
+  });
+  const indexManager = createIndexManager(staleIndex);
+  let refreshes = 0;
+  indexManager.refreshWorkspace = async () => {
+    refreshes += 1;
+    indexManager.setIndex(freshIndex);
+    return freshIndex;
+  };
+
+  const succeeded = await executeInPlace(editor, indexManager);
+
+  assert.equal(succeeded, true);
+  assert.equal(refreshes, 1);
+  assert.deepEqual(executeCommandCalls, [{
+    args: [{
+      code: "engineer_features(raw_medium, sleep = 0.9)",
+      focus: false,
+      langId: "r"
+    }],
+    command: "workbench.action.executeCode.console"
+  }]);
+});
+
+test("executeInPlace() falls back to Positron's default execution outside valid target regions", async () => {
+  const editor = createEditor("x <- 1", {
+    cursor: 2,
+    filePath: "/tmp/_targets.R"
+  });
+  const { errorMessages, executeCommandCalls, executeInPlace } = loadExtensionWithMocks({
+    positronApi: {},
+    executeCommandImpl: async () => {}
+  });
+  const indexManager = createIndexManager(createIndex());
+
+  const succeeded = await executeInPlace(editor, indexManager);
+
+  assert.equal(succeeded, true);
+  assert.deepEqual(executeCommandCalls, [{
+    args: [],
+    command: "workbench.action.positronConsole.executeCode"
+  }]);
+  assert.deepEqual(errorMessages, []);
+});
+
+test("registerExecuteInPlaceCommand() uses a text editor command registration", () => {
+  const { registerExecuteInPlaceCommand, registeredTextEditorCommands } = loadExtensionWithMocks();
+  const context = {
+    subscriptions: []
+  };
+
+  const disposable = registerExecuteInPlaceCommand(context, createIndexManager(createIndex()));
+
+  assert.equal(registeredTextEditorCommands.length, 1);
+  assert.equal(registeredTextEditorCommands[0].command, "targetsTools.executeInPlace");
   assert.equal(context.subscriptions[0], disposable);
 });

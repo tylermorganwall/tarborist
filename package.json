@@ -5,7 +5,7 @@
   "description": "Static analysis for navigating and debugging complex R targets pipelines",
   "icon": "tarborist.png",
   "license": "GPL-3.0-or-later",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/tylermorganwall/tarborist.git"
@@ -36,6 +36,11 @@
             "type": "string"
           },
           "markdownDescription": "Additional `tar_target()`-like factory names to treat as single-target factories during static analysis. Use this only for factories that create exactly one target and follow the same `name` / `command` / `pattern` shape as `tar_target()`, for example `tar_parquet`."
+        },
+        "tarborist.executeInPlace.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Override `Cmd/Ctrl+Enter` inside valid targets command regions so tarborist runs the target command in place instead of Positron's default editor execution."
         },
         "tarborist.targetHeatmap.enabled": {
           "type": "boolean",
@@ -139,12 +144,29 @@
         "title": "tarborist: Refresh Pipeline Index"
       },
       {
+        "command": "targetsTools.executeInPlace",
+        "title": "Targets: Run Here Without Moving Cursor",
+        "enablement": "isPositron && editorLangId == r && config.tarborist.executeInPlace.enabled"
+      },
+      {
         "command": "targetsTools.tarLoadHere",
         "title": "Targets: tar_load Here",
         "enablement": "isPositron && tarborist.canTarLoadHere"
       }
     ],
     "keybindings": [
+      {
+        "command": "-workbench.action.positronConsole.executeCode",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && editorLangId == r && isPositron && config.tarborist.executeInPlace.enabled"
+      },
+      {
+        "command": "targetsTools.executeInPlace",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && editorLangId == r && isPositron && config.tarborist.executeInPlace.enabled"
+      },
       {
         "command": "targetsTools.tarLoadHere",
         "key": "ctrl+alt+shift+l",
