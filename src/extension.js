@@ -378,7 +378,7 @@ async function activate(context) {
     const selected = await vscode.window.showQuickPick(
       payload.targets.map((target) => ({
         description: target.description,
-        label: target.name,
+        label: target.label || target.name,
         target
       })),
       {

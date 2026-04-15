@@ -379,10 +379,11 @@ test("further-downstream quick-pick payload includes relative update age after t
   const payloadEnd = markdown.indexOf(") |", payloadStart);
   const [payload] = JSON.parse(decodeURIComponent(markdown.slice(payloadStart, payloadEnd)));
   assert.equal(payload.targets[0].name, "z");
-  assert.match(payload.targets[0].description, /^<1 deep> _targets\.R:4 \(not built yet\)$/);
+  assert.equal(payload.targets[0].label, "[+1] z");
+  assert.match(payload.targets[0].description, /^_targets\.R:4 \(not built yet\)$/);
 });
 
-test("further-downstream quick-pick descriptions include indirect depth labels", async () => {
+test("further-downstream quick-pick items are sorted by indirect depth then alphabetically", async () => {
   const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
   const { index, root } = buildIndex("deep_downstream_hover");
   const filePath = path.join(root, "_targets.R");
@@ -410,9 +411,11 @@ test("further-downstream quick-pick descriptions include indirect depth labels",
   const [payload] = JSON.parse(decodeURIComponent(markdown.slice(payloadStart, payloadEnd)));
 
   assert.equal(payload.targets[0].name, "c");
-  assert.match(payload.targets[0].description, /^<1 deep> _targets\.R:4$/);
+  assert.equal(payload.targets[0].label, "[+1] c");
+  assert.match(payload.targets[0].description, /^_targets\.R:4$/);
   assert.equal(payload.targets[1].name, "d");
-  assert.match(payload.targets[1].description, /^<2 deep> _targets\.R:5$/);
+  assert.equal(payload.targets[1].label, "[+2] d");
+  assert.match(payload.targets[1].description, /^_targets\.R:5$/);
 });
 
 test("direct-downstream quick-pick descriptions are labeled as direct", async () => {

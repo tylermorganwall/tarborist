@@ -84,6 +84,28 @@ function formatTargetLinks(index, targetNames) {
   return links.length ? links.join(", ") : "`None`";
 }
 
+function buildTargetListLabel(target, options = {}) {
+  const indirectDistance = options.indirectDistance;
+  if (Number.isFinite(indirectDistance) && indirectDistance >= 2) {
+    return `[+${indirectDistance - 1}] ${target.name}`;
+  }
+
+  return target.name;
+}
+
+function sortTargetListTargets(targets, options = {}) {
+  return targets.slice().sort((left, right) => {
+    const leftDepth = options.indirectDepths ? (options.indirectDepths.get(left.name) || Number.MAX_SAFE_INTEGER) : 1;
+    const rightDepth = options.indirectDepths ? (options.indirectDepths.get(right.name) || Number.MAX_SAFE_INTEGER) : 1;
+
+    if (leftDepth !== rightDepth) {
+      return leftDepth - rightDepth;
+    }
+
+    return left.name.localeCompare(right.name);
+  });
+}
+
 function commandLinkForTargetList(index, label, title, targets, root, options = {}) {
   if (!targets.length) {
     return `\`${label}\``;
@@ -91,16 +113,21 @@ function commandLinkForTargetList(index, label, title, targets, root, options = 
 
   // Large downstream sets are easier to inspect through a quick-pick than by
   // dumping every target directly into the hover.
+  const orderedTargets = sortTargetListTargets(targets, options);
   const payload = {
-    targets: targets.map((target) => {
+    targets: orderedTargets.map((target) => {
       const destination = getTargetLocation(target);
+      const indirectDistance = options.indirectDepths ? options.indirectDepths.get(target.name) : null;
 
       return {
         description: buildTargetListDescription(index, target, root, destination, {
           direct: options.direct === true,
-          indirectDistance: options.indirectDepths ? options.indirectDepths.get(target.name) : null
+          indirectDistance
         }),
         file: destination.file,
+        label: buildTargetListLabel(target, {
+          indirectDistance
+        }),
         name: target.name,
         range: destination.range
       };
@@ -230,21 +257,17 @@ function formatMetaAge(meta) {
 function buildTargetListDescription(index, target, root, destination, options = {}) {
   const location = formatLocation(root, destination.file, destination.range);
   const directPrefix = options.direct ? "<direct> " : "";
-  const indirectDistance = options.indirectDistance;
-  const depthPrefix = Number.isFinite(indirectDistance) && indirectDistance >= 2
-    ? `<${indirectDistance - 1} deep> `
-    : "";
   const meta = index.targetsMeta && index.targetsMeta.get(target.name);
   if (meta && !meta.time) {
-    return `${directPrefix}${depthPrefix}${location} (not built yet)`;
+    return `${directPrefix}${location} (not built yet)`;
   }
 
   const age = formatMetaAge(meta);
   const suffixParts = age ? [`updated ${age}`] : [];
 
   return suffixParts.length
-    ? `${directPrefix}${depthPrefix}${location} (${suffixParts.join(", ")})`
-    : `${directPrefix}${depthPrefix}${location}`;
+    ? `${directPrefix}${location} (${suffixParts.join(", ")})`
+    : `${directPrefix}${location}`;
 }
 
 function appendTextBlock(markdown, title, text) {
