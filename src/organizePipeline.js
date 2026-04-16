@@ -4,7 +4,7 @@ const { ensureParserReady, parseText } = require("./parser/treeSitter");
 const { getArgumentValue, getAssignmentParts, matchesCall, unwrapNode } = require("./parser/ast");
 const { comparePositions } = require("./util/ranges");
 
-const LIST_CALLS = new Set(["list"]);
+const PIPELINE_CALLS = new Set(["list", "tar_plan"]);
 
 function positionToOffset(text, position) {
   let offset = 0;
@@ -37,7 +37,7 @@ function getTopLevelListCalls(tree) {
   for (const node of tree.rootNode.namedChildren || []) {
     const assignment = getAssignmentParts(node);
     const candidate = unwrapNode(assignment ? assignment.rhs : node);
-    if (candidate && candidate.type === "call" && matchesCall(candidate, LIST_CALLS)) {
+    if (candidate && candidate.type === "call" && matchesCall(candidate, PIPELINE_CALLS)) {
       calls.push(candidate);
     }
   }

@@ -22,6 +22,7 @@ const {
   COMBINE_CALLS,
   createDirectTargetCalls,
   MAP_CALLS,
+  PLAN_CALLS,
   QUARTO_CALLS,
   SELECT_TARGETS_CALLS,
   TARGET_LOAD_CALLS,
@@ -223,7 +224,7 @@ function looksLikePipelineListItem(node) {
     || current.type === "namespace_operator";
 }
 
-function addListSyntaxDiagnostics(callNode, state, file) {
+function addListSyntaxDiagnostics(callNode, state, file, containerLabel = "list()") {
   const argumentsNode = callNode && callNode.childForFieldName
     ? callNode.childForFieldName("arguments")
     : null;
@@ -250,7 +251,7 @@ function addListSyntaxDiagnostics(callNode, state, file) {
       file,
       rangeFromNode(getListLintRepresentative(child) || child),
       "warning",
-      "Static pipeline analysis is partial: possible missing comma after pipeline item in list()"
+      `Static pipeline analysis is partial: possible missing comma after pipeline item in ${containerLabel}`
     );
   }
 }
@@ -265,7 +266,7 @@ function isValidPipelineListValue(value) {
   );
 }
 
-function resolveListItemValue(argument, env, state, file) {
+function resolveListItemValue(argument, env, state, file, containerLabel = "list()") {
   const resolved = resolveTopLevelValue(argument.value, env, state, file);
   if (isValidPipelineListValue(resolved)) {
     return resolved;
@@ -286,7 +287,7 @@ function resolveListItemValue(argument, env, state, file) {
       return makeUnknown(
         file,
         rangeFromNode(argument.value),
-        `Static pipeline analysis is partial: unsupported target factory '${callName}()' in pipeline list; add it to tarborist.additionalSingleTargetFactories if it is single-target and tar_target()-like`
+        `Static pipeline analysis is partial: unsupported target factory '${callName}()' in ${containerLabel}; add it to tarborist.additionalSingleTargetFactories if it is single-target and tar_target()-like`
       );
     }
   }
@@ -294,7 +295,7 @@ function resolveListItemValue(argument, env, state, file) {
   return makeUnknown(
     file,
     rangeFromNode(argument.value),
-    "Static pipeline analysis is partial: list() pipeline items must be target factories, target objects, or pipeline lists"
+    `Static pipeline analysis is partial: ${containerLabel} pipeline items must be target factories, target objects, or pipeline lists`
   );
 }
 
@@ -544,6 +545,42 @@ function resolveTarSelectTargetsCall(callNode, env, state, file) {
   );
 }
 
+function resolveTarPlanNamedTarget(callNode, argument, file) {
+  const nameNode = argument.node && argument.node.childForFieldName
+    ? argument.node.childForFieldName("name")
+    : null;
+  const rawCommandNode = argument.node ? getArgumentValue(argument.node) : null;
+  const name = (nameNode && extractTargetName(nameNode)) || argument.name || null;
+
+  if (!name || !rawCommandNode) {
+    return makeUnknown(
+      file,
+      rangeFromNode(argument.node || callNode),
+      "Static pipeline analysis is partial: tar_plan() named entries must use target = command syntax"
+    );
+  }
+
+  return makeTargetObject(createTargetDefinition(file, callNode, {
+    commandNode: rawCommandNode,
+    fullNode: argument.node,
+    name,
+    nameNode,
+    origin: "tar_plan"
+  }));
+}
+
+function resolveTarPlanCall(callNode, env, state, file) {
+  addListSyntaxDiagnostics(callNode, state, file, "tar_plan()");
+
+  return makeTargetList(
+    unpackArguments(callNode).map((argument) => (
+      argument.name
+        ? resolveTarPlanNamedTarget(callNode, argument, file)
+        : resolveListItemValue(argument, env, state, file, "tar_plan()")
+    ))
+  );
+}
+
 function resolveTarQuartoCall(callNode, env, state, file, forcedName = null, forcedNameNode = null) {
   const { name, nameNode } = resolveFactoryName(callNode, forcedName, forcedNameNode);
   if (!name) {
@@ -730,6 +767,10 @@ function resolveTargetFactoryCall(node, env, state, file, forcedName = null, for
 
   if (matchesCall(current, SELECT_TARGETS_CALLS)) {
     return resolveTarSelectTargetsCall(current, env, state, file);
+  }
+
+  if (matchesCall(current, PLAN_CALLS)) {
+    return resolveTarPlanCall(current, env, state, file);
   }
 
   if (matchesCall(current, new Set(["list"]))) {

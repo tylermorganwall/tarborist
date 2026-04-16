@@ -123,3 +123,38 @@ test("organizePipelineText() preserves original order for dependency ties", asyn
   assert.equal(result.changed, true);
   assert.equal(result.text, expected);
 });
+
+test("organizePipelineText() also reorders tar_plan() named entries by DAG", async () => {
+  const input = [
+    "tarchetypes::tar_plan(",
+    "  # beta comment",
+    "  beta = alpha + 1,",
+    "",
+    "  # alpha comment",
+    "  alpha = 1,",
+    "  tar_target(gamma, beta + 1)",
+    ")",
+    ""
+  ].join("\n");
+  const expected = [
+    "tarchetypes::tar_plan(",
+    "  # alpha comment",
+    "  alpha = 1,",
+    "",
+    "  # beta comment",
+    "  beta = alpha + 1,",
+    "  tar_target(gamma, beta + 1)",
+    ")",
+    ""
+  ].join("\n");
+  const { file, index } = buildIndexFromText(input);
+
+  const result = await organizePipelineText({
+    file,
+    index,
+    text: input
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.text, expected);
+});

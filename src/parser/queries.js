@@ -19,6 +19,11 @@ const MAP_CALLS = new Set([
   "tarchetypes::tar_map"
 ]);
 
+const PLAN_CALLS = new Set([
+  "tar_plan",
+  "tarchetypes::tar_plan"
+]);
+
 const ASSIGN_CALLS = new Set([
   "tar_assign",
   "tarchetypes::tar_assign"
@@ -107,6 +112,7 @@ module.exports = {
   DIRECT_TARGET_CALLS,
   IMPORT_CALLS,
   MAP_CALLS,
+  PLAN_CALLS,
   QUARTO_CALLS,
   SELECT_TARGETS_CALLS,
   SOURCE_CALLS,

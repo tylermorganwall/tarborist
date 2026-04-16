@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.0] - 2026-04-15
+
+### Added
+
+- Static support for `tar_plan()` / `tarchetypes::tar_plan()` pipeline containers, including named `target = command` entries and mixed plans that also include ordinary target objects.
+
+### Changed
+
+- `tarborist: Organize Pipeline by DAG` now also reorders `tar_plan()` entries by dependency order while preserving tied order and keeping leading comments attached to their targets.
+
 ## [0.10.0] - 2026-04-14
 
 ### Added

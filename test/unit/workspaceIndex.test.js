@@ -352,6 +352,24 @@ test("indexes tar_select_targets() with tidyselect operators", () => {
   assert.deepEqual([...index.targets.keys()], ["alpha", "gamma"]);
 });
 
+test("indexes tar_plan() named targets and unnamed target objects", () => {
+  const index = buildIndex("tar_plan");
+  const beta = index.targets.get("beta");
+  const gamma = index.targets.get("gamma");
+  const betaRegion = index.completionRegions.find((region) => (
+    region.kind === "command" && region.enclosingTargets.includes("beta")
+  ));
+
+  assert.equal(index.partial, false);
+  assert.deepEqual([...index.targets.keys()], ["alpha", "beta", "gamma"]);
+  assert.equal(beta.origin, "tar_plan");
+  assert.ok(beta.commandRange);
+  assert.ok(betaRegion);
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "beta" && ref.targetName === "alpha"));
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "gamma" && ref.targetName === "beta"));
+  assert.equal(gamma.origin, "tar_target");
+});
+
 test("indexes configured additional single-target factories", () => {
   const index = buildIndex("additional_target_factories", {
     additionalSingleTargetFactories: ["tar_parquet"]
