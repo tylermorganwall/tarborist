@@ -30,6 +30,7 @@ const {
   TARGET_READ_CALLS,
   TARGET_READ_RAW_CALLS
 } = require("../parser/queries");
+const { parseText } = require("../parser/treeSitter");
 const { compareRanges, rangeFromNode, zeroRange } = require("../util/ranges");
 const { normalizeFile, pathExists, relativeFile } = require("../util/paths");
 const { analyzeFile } = require("./fileRecord");
@@ -446,6 +447,463 @@ function resolveSubsetValue(node, env, state, file) {
     rangeFromNode(parts.indexNode),
     `Static pipeline analysis is partial: list subset index ${indexValue.value} is out of bounds`
   );
+}
+
+function positionToOffset(text, position) {
+  let offset = 0;
+  let line = 0;
+
+  while (line < position.line) {
+    const nextBreak = text.indexOf("\n", offset);
+    if (nextBreak === -1) {
+      return text.length;
+    }
+
+    offset = nextBreak + 1;
+    line += 1;
+  }
+
+  return Math.min(text.length, offset + position.character);
+}
+
+function offsetToPosition(text, offset) {
+  const bounded = Math.max(0, Math.min(text.length, offset));
+  let line = 0;
+  let lineStart = 0;
+
+  for (let index = 0; index < bounded; index += 1) {
+    if (text[index] === "\n") {
+      line += 1;
+      lineStart = index + 1;
+    }
+  }
+
+  return {
+    character: bounded - lineStart,
+    line
+  };
+}
+
+function shiftPosition(basePosition, relativePosition) {
+  if (!basePosition || !relativePosition) {
+    return relativePosition || zeroRange().start;
+  }
+
+  return {
+    character: relativePosition.line === 0
+      ? basePosition.character + relativePosition.character
+      : relativePosition.character,
+    line: basePosition.line + relativePosition.line
+  };
+}
+
+function shiftRange(range, basePosition) {
+  if (!range) {
+    return null;
+  }
+
+  return {
+    end: shiftPosition(basePosition, range.end),
+    start: shiftPosition(basePosition, range.start)
+  };
+}
+
+function shiftRecoveredTargetRanges(target, basePosition) {
+  return {
+    ...target,
+    commandRange: shiftRange(target.commandRange, basePosition),
+    fullRange: shiftRange(target.fullRange, basePosition),
+    nameRange: shiftRange(target.nameRange, basePosition),
+    patternRange: shiftRange(target.patternRange, basePosition)
+  };
+}
+
+function splitDelimitedSegments(text, delimiter = ",") {
+  const segments = [];
+  let start = 0;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  let quote = null;
+  let escaped = false;
+  let inComment = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+
+    if (inComment) {
+      if (character === "\n") {
+        inComment = false;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+
+      if (character === "\\") {
+        escaped = true;
+        continue;
+      }
+
+      if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (character === "#" ) {
+      inComment = true;
+      continue;
+    }
+
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+
+    if (character === "(") {
+      parenDepth += 1;
+      continue;
+    }
+
+    if (character === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      continue;
+    }
+
+    if (character === "[") {
+      bracketDepth += 1;
+      continue;
+    }
+
+    if (character === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      continue;
+    }
+
+    if (character === "{") {
+      braceDepth += 1;
+      continue;
+    }
+
+    if (character === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+      continue;
+    }
+
+    if (character === delimiter && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
+      segments.push({
+        end: index,
+        start
+      });
+      start = index + 1;
+    }
+  }
+
+  segments.push({
+    end: text.length,
+    start
+  });
+  return segments;
+}
+
+function trimSegmentBounds(text, start, end) {
+  let nextStart = start;
+  let nextEnd = end;
+
+  while (nextStart < nextEnd && /\s/.test(text[nextStart])) {
+    nextStart += 1;
+  }
+
+  while (nextEnd > nextStart && /\s/.test(text[nextEnd - 1])) {
+    nextEnd -= 1;
+  }
+
+  return {
+    end: nextEnd,
+    start: nextStart
+  };
+}
+
+function splitCallBodySegments(callText, absoluteStartOffset) {
+  const openParen = callText.indexOf("(");
+  const closeParen = callText.lastIndexOf(")");
+  if (openParen === -1) {
+    return [];
+  }
+
+  const bodyStart = openParen + 1;
+  const bodyEnd = closeParen > openParen ? closeParen : callText.length;
+  const bodyText = callText.slice(bodyStart, bodyEnd);
+
+  return splitDelimitedSegments(bodyText).map((segment) => {
+    const start = bodyStart + segment.start;
+    const end = bodyStart + segment.end;
+    const trimmed = trimSegmentBounds(callText, start, end);
+
+    return {
+      endOffset: absoluteStartOffset + trimmed.end,
+      startOffset: absoluteStartOffset + trimmed.start,
+      text: callText.slice(trimmed.start, trimmed.end)
+    };
+  }).filter((segment) => segment.text);
+}
+
+function getLeadingCallName(text) {
+  const match = text.match(/^\s*([A-Za-z.][A-Za-z0-9._]*(?:::[A-Za-z.][A-Za-z0-9._]*)?)/);
+  return match ? match[1] : null;
+}
+
+function splitNamedArgumentText(text) {
+  const segments = splitDelimitedSegments(text, "=");
+  if (segments.length < 2) {
+    return null;
+  }
+
+  const left = text.slice(segments[0].start, segments[0].end).trim();
+  const right = text.slice(segments[1].start, text.length).trim();
+  if (!left || !right) {
+    return null;
+  }
+
+  return {
+    name: left,
+    value: right
+  };
+}
+
+function readRecoveredName(text) {
+  const trimmed = text.trim();
+  if (/^[.A-Za-z][.A-Za-z0-9_]*$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  if ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+
+  return null;
+}
+
+function recoverMalformedTargetFactoryItem(segment, env, state, file, callName, origin = "tar_target") {
+  const argumentSegments = splitCallBodySegments(segment.text, segment.startOffset);
+  if (!argumentSegments.length) {
+    return makeUnknown(
+      file,
+      {
+        end: offsetToPosition(state.readFile(file), segment.endOffset),
+        start: offsetToPosition(state.readFile(file), segment.startOffset)
+      },
+      "Static pipeline analysis is partial: unsupported expression in pipeline"
+    );
+  }
+
+  let nameSegment = null;
+  let commandSegment = null;
+  let positionalIndex = 0;
+  for (const argumentSegment of argumentSegments) {
+    const named = splitNamedArgumentText(argumentSegment.text);
+    if (named && named.name === "name") {
+      nameSegment = {
+        ...argumentSegment,
+        text: named.value
+      };
+      continue;
+    }
+
+    if (named && named.name === "command") {
+      commandSegment = {
+        ...argumentSegment,
+        text: named.value
+      };
+      continue;
+    }
+
+    if (!nameSegment && positionalIndex === 0) {
+      nameSegment = argumentSegment;
+      positionalIndex += 1;
+      continue;
+    }
+
+    if (!commandSegment && positionalIndex <= 1) {
+      commandSegment = argumentSegment;
+      positionalIndex += 1;
+    }
+  }
+
+  const name = nameSegment ? readRecoveredName(nameSegment.text) : null;
+  if (!name || !commandSegment) {
+    return makeUnknown(
+      file,
+      {
+        end: offsetToPosition(state.readFile(file), segment.endOffset),
+        start: offsetToPosition(state.readFile(file), segment.startOffset)
+      },
+      `Static pipeline analysis is partial: could not recover malformed ${callName}() target`
+    );
+  }
+
+  const target = {
+    _analysis: {
+      bindings: null,
+      commandNode: null,
+      externalRefs: [],
+      patternNode: null,
+      templateName: name,
+      templateNameMap: null
+    },
+    commandRange: {
+      end: offsetToPosition(state.readFile(file), commandSegment.endOffset),
+      start: offsetToPosition(state.readFile(file), commandSegment.startOffset)
+    },
+    file,
+    fullRange: {
+      end: offsetToPosition(state.readFile(file), segment.endOffset),
+      start: offsetToPosition(state.readFile(file), segment.startOffset)
+    },
+    generated: false,
+    name,
+    nameRange: {
+      end: offsetToPosition(state.readFile(file), nameSegment.endOffset),
+      start: offsetToPosition(state.readFile(file), nameSegment.startOffset)
+    },
+    options: {
+      cue: null,
+      parallel: []
+    },
+    origin,
+    patternRange: null
+  };
+
+  addDiagnostic(
+    state,
+    file,
+    target.fullRange,
+    "warning",
+    `Static pipeline analysis is partial: unsupported or incomplete command expression in target '${name}'`
+  );
+  return makeTargetObject(target);
+}
+
+function resolveRecoveredPipelineItem(segment, containerCallName, env, state, file) {
+  const text = segment.text;
+  if (!text) {
+    return makeTargetList([]);
+  }
+
+  if (containerCallName !== "list") {
+    const named = splitNamedArgumentText(text);
+    if (named) {
+      const name = readRecoveredName(named.name);
+      if (name) {
+        const valueStart = segment.startOffset + text.indexOf(named.value);
+        const target = {
+          _analysis: {
+            bindings: null,
+            commandNode: null,
+            externalRefs: [],
+            patternNode: null,
+            templateName: name,
+            templateNameMap: null
+          },
+          commandRange: {
+            end: offsetToPosition(state.readFile(file), valueStart + named.value.length),
+            start: offsetToPosition(state.readFile(file), valueStart)
+          },
+          file,
+          fullRange: {
+            end: offsetToPosition(state.readFile(file), segment.endOffset),
+            start: offsetToPosition(state.readFile(file), segment.startOffset)
+          },
+          generated: false,
+          name,
+          nameRange: {
+            end: offsetToPosition(state.readFile(file), segment.startOffset + text.indexOf(named.name) + named.name.length),
+            start: offsetToPosition(state.readFile(file), segment.startOffset + text.indexOf(named.name))
+          },
+          options: {
+            cue: null,
+            parallel: []
+          },
+          origin: "tar_plan",
+          patternRange: null
+        };
+
+        addDiagnostic(
+          state,
+          file,
+          target.fullRange,
+          "warning",
+          `Static pipeline analysis is partial: unsupported or incomplete command expression in target '${name}'`
+        );
+        return makeTargetObject(target);
+      }
+    }
+  }
+
+  if (/^[.A-Za-z][.A-Za-z0-9_]*$/.test(text.trim())) {
+    return env.get(text.trim()) || makeUnknown(
+      file,
+      {
+        end: offsetToPosition(state.readFile(file), segment.endOffset),
+        start: offsetToPosition(state.readFile(file), segment.startOffset)
+      },
+      `Static pipeline analysis is partial: unresolved symbol '${text.trim()}'`
+    );
+  }
+
+  const parsed = parseText(`${text}\n`, {
+    file,
+    phase: "recoverPipelineItem"
+  });
+  const rootExpression = (parsed.rootNode.namedChildren || []).find((child) => child.type !== "comment") || null;
+  if (rootExpression && rootExpression.type === "call" && matchesCall(rootExpression, state.callSets.directTargetCalls)) {
+    const parsedTarget = parseTarTargetCall(rootExpression, file, {
+      origin: "tar_target"
+    });
+    if (parsedTarget.ok) {
+      return makeTargetObject(shiftRecoveredTargetRanges(
+        parsedTarget.target,
+        offsetToPosition(state.readFile(file), segment.startOffset)
+      ));
+    }
+  }
+
+  const callName = getLeadingCallName(text);
+  if (callName && state.callSets.directTargetCalls.has(getShortCallName(callName))) {
+    return recoverMalformedTargetFactoryItem(segment, env, state, file, getShortCallName(callName), containerCallName === "list" ? "tar_target" : "tar_plan");
+  }
+
+  return makeUnknown(
+    file,
+    {
+      end: offsetToPosition(state.readFile(file), segment.endOffset),
+      start: offsetToPosition(state.readFile(file), segment.startOffset)
+    },
+    "Static pipeline analysis is partial: unsupported expression in pipeline"
+  );
+}
+
+function resolveMalformedPipelineCall(statement, env, state, file) {
+  const fileText = state.readFile(file);
+  const callStart = positionToOffset(fileText, {
+    character: statement.calleeNode.startPosition.column,
+    line: statement.calleeNode.startPosition.row
+  });
+  const callEnd = positionToOffset(fileText, {
+    character: statement.node.endPosition.column,
+    line: statement.node.endPosition.row
+  });
+  const callText = fileText.slice(callStart, callEnd);
+  const items = splitCallBodySegments(callText, callStart).map((segment) => (
+    resolveRecoveredPipelineItem(segment, statement.callName, env, state, file)
+  ));
+
+  return makeTargetList(items);
 }
 
 function isPlaceholderIdentifier(node) {
@@ -1193,6 +1651,11 @@ function executeFile(file, state) {
           env.set(symbol, value);
         }
       }
+      continue;
+    }
+
+    if (statement.kind === "malformedPipelineCall") {
+      lastValue = resolveMalformedPipelineCall(statement, env, state, normalizedFile);
       continue;
     }
 
