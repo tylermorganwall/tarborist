@@ -304,6 +304,22 @@ test("root partial-analysis diagnostic includes issue locations from imported fi
   assert.match(summary.message, /part\.R:3 unresolved symbol 'missing_part'/);
 });
 
+test("isolates incomplete target commands to the surrounding target instead of the whole pipeline", () => {
+  const index = buildIndex("partial_target_command");
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+  const targetDiagnostic = diagnostics.find((diagnostic) => diagnostic.message.includes("unsupported or incomplete command expression in target 'plot'"));
+  const rootRecord = [...index.files.values()].find((record) => record.file.endsWith(path.join("partial_target_command", "_targets.R")));
+  const summary = rootRecord.diagnostics.find((diagnostic) => diagnostic.severity === "information" && diagnostic.message.startsWith("Static pipeline analysis is partial. Issues:"));
+
+  assert.equal(index.partial, true);
+  assert.deepEqual([...index.targets.keys()], ["plot", "other", "third"]);
+  assert.ok(index.refs.some((ref) => ref.enclosingTarget === "third" && ref.targetName === "other"));
+  assert.ok(targetDiagnostic);
+  assert.equal(targetDiagnostic.range.start.line, 1);
+  assert.ok(summary);
+  assert.match(summary.message, /_targets\.R:2 unsupported or incomplete command expression in target 'plot'/);
+});
+
 test("captures cue and parallel target options verbatim", () => {
   const index = buildIndex("target_options");
   const target = index.targets.get("a");

@@ -10,6 +10,10 @@
 
 - `tarborist: Organize Pipeline by DAG` now also reorders `tar_plan()` entries by dependency order while preserving tied order and keeping leading comments attached to their targets.
 
+### Fixed
+
+- Incomplete target command expressions inside malformed top-level `list(...)` and `tar_plan()` pipelines are now isolated to the surrounding target/factory, so later targets can still be recovered and partial-analysis warnings point at the broken target instead of the whole pipeline.
+
 ## [0.10.0] - 2026-04-14
 
 ### Added
