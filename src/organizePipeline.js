@@ -82,35 +82,80 @@ function collectListEntries(callNode, text, targetsInFile) {
     character: argumentsNode.endPosition.column - 1,
     line: argumentsNode.endPosition.row
   });
+  const argumentIndexes = [];
+  for (let index = 0; index < children.length; index += 1) {
+    if (children[index].type === "argument") {
+      argumentIndexes.push(index);
+    }
+  }
 
-  let pendingComments = [];
-  for (const child of children) {
-    if (child.type === "comment") {
-      pendingComments.push(child);
-      continue;
+  for (const argumentIndex of argumentIndexes) {
+    const child = children[argumentIndex];
+    let leadingNode = child;
+    let expectedCommentRow = child.startPosition.row - 1;
+
+    for (let index = argumentIndex - 1; index >= 0; index -= 1) {
+      const candidate = children[index];
+      if (candidate.type !== "comment") {
+        continue;
+      }
+
+      if (candidate.endPosition.row !== expectedCommentRow) {
+        break;
+      }
+
+      leadingNode = candidate;
+      expectedCommentRow = candidate.startPosition.row - 1;
     }
 
-    if (child.type !== "argument") {
-      continue;
-    }
-
-    const leadingNode = pendingComments.length ? pendingComments[0] : child;
     const startOffset = getLineStartOffset(text, leadingNode.startPosition.row);
-    const endOffset = positionToOffset(text, {
+    const argStartOffset = positionToOffset(text, {
+      character: child.startPosition.column,
+      line: child.startPosition.row
+    });
+    const argEndOffset = positionToOffset(text, {
       character: child.endPosition.column,
       line: child.endPosition.row
     });
+
+    let separatorStartOffset = argEndOffset;
+    let trailingText = "";
+    const sameLineComma = children[argumentIndex + 1]
+      && (children[argumentIndex + 1].type === "," || children[argumentIndex + 1].type === "comma")
+      && children[argumentIndex + 1].startPosition.row === child.endPosition.row
+      ? children[argumentIndex + 1]
+      : null;
+    if (sameLineComma) {
+      separatorStartOffset = positionToOffset(text, {
+        character: sameLineComma.endPosition.column,
+        line: sameLineComma.endPosition.row
+      });
+    }
+
+    const sameLineComment = children[argumentIndex + (sameLineComma ? 2 : 1)]
+      && children[argumentIndex + (sameLineComma ? 2 : 1)].type === "comment"
+      && children[argumentIndex + (sameLineComma ? 2 : 1)].startPosition.row === child.endPosition.row
+      ? children[argumentIndex + (sameLineComma ? 2 : 1)]
+      : null;
+    if (sameLineComment) {
+      const commentEndOffset = positionToOffset(text, {
+        character: sameLineComment.endPosition.column,
+        line: sameLineComment.endPosition.row
+      });
+      trailingText = text.slice(separatorStartOffset, commentEndOffset);
+      separatorStartOffset = commentEndOffset;
+    }
+
     const target = findMovableTarget(child, targetsInFile);
 
     entries.push({
-      argEndOffset: endOffset,
-      endOffset,
+      argumentText: text.slice(argStartOffset, argEndOffset),
+      beforeText: text.slice(startOffset, argStartOffset),
+      separatorStartOffset,
       startOffset,
       target,
-      text: text.slice(startOffset, endOffset)
+      trailingText
     });
-
-    pendingComments = [];
   }
 
   if (!entries.length) {
@@ -119,11 +164,11 @@ function collectListEntries(callNode, text, targetsInFile) {
 
   const separators = [];
   for (let index = 0; index < entries.length - 1; index += 1) {
-    separators.push(text.slice(entries[index].argEndOffset, entries[index + 1].startOffset));
+    separators.push(text.slice(entries[index].separatorStartOffset, entries[index + 1].startOffset));
   }
 
   const prefix = text.slice(interiorStart, entries[0].startOffset);
-  const suffix = text.slice(entries[entries.length - 1].argEndOffset, interiorEnd);
+  const suffix = text.slice(entries[entries.length - 1].separatorStartOffset, interiorEnd);
 
   return {
     entries,
@@ -223,9 +268,14 @@ function buildListReplacement(listData, graph) {
 
   let body = listData.prefix;
   for (let index = 0; index < reorderedEntries.length; index += 1) {
-    body += reorderedEntries[index].text;
+    body += reorderedEntries[index].beforeText;
+    body += reorderedEntries[index].argumentText;
     if (index < reorderedEntries.length - 1) {
-      body += listData.separators[index] || ",\n";
+      body += ",";
+    }
+    body += reorderedEntries[index].trailingText;
+    if (index < reorderedEntries.length - 1) {
+      body += listData.separators[index] || "\n";
     }
   }
 

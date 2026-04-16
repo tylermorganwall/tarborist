@@ -13,6 +13,7 @@
 ### Fixed
 
 - Incomplete target command expressions inside malformed top-level `list(...)` and `tar_plan()` pipelines are now isolated to the surrounding target/factory, so later targets can still be recovered and partial-analysis warnings point at the broken target instead of the whole pipeline.
+- DAG-based pipeline organization now keeps same-line trailing comments attached to their targets when entries are reordered, instead of duplicating or misassigning targets in commented lists.
 
 ## [0.10.0] - 2026-04-14
 

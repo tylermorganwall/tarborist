@@ -158,3 +158,56 @@ test("organizePipelineText() also reorders tar_plan() named entries by DAG", asy
   assert.equal(result.changed, true);
   assert.equal(result.text, expected);
 });
+
+test("organizePipelineText() keeps inline comments attached without duplicating targets", async () => {
+  const input = [
+    "library(targets)",
+    "",
+    "list(",
+    "\t# final summary",
+    "\ttar_target(summary_tbl, data.frame(score = score, flag = flagged)), # 6",
+    "",
+    "\ttar_target(score, mean(model$x)), # 4",
+    "",
+    "\t# source data",
+    "\ttar_target(raw_data, data.frame(x = 1:10, y = (1:10) + 1)), # 1",
+    "",
+    "\ttar_target(flagged, score > 5), # 5",
+    "",
+    "\ttar_target(model, transform(clean_data, x = x * 2)), # 3",
+    "",
+    "\ttar_target(clean_data, subset(raw_data, x > 3)) # 2",
+    ")",
+    ""
+  ].join("\n");
+  const expected = [
+    "library(targets)",
+    "",
+    "list(",
+    "\t# source data",
+    "\ttar_target(raw_data, data.frame(x = 1:10, y = (1:10) + 1)), # 1",
+    "",
+    "\ttar_target(clean_data, subset(raw_data, x > 3)), # 2",
+    "",
+    "\ttar_target(model, transform(clean_data, x = x * 2)), # 3",
+    "",
+    "\ttar_target(score, mean(model$x)), # 4",
+    "",
+    "\ttar_target(flagged, score > 5), # 5",
+    "",
+    "\t# final summary",
+    "\ttar_target(summary_tbl, data.frame(score = score, flag = flagged)) # 6",
+    ")",
+    ""
+  ].join("\n");
+  const { file, index } = buildIndexFromText(input);
+
+  const result = await organizePipelineText({
+    file,
+    index,
+    text: input
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.text, expected);
+});
