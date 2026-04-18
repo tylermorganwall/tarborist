@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const vscode = require("vscode");
 
 const { normalizeFile } = require("../util/paths");
@@ -25,6 +26,11 @@ const DEFAULT_TARGET_STATUS_DECORATION_OPTIONS = Object.freeze({
   errorColor: "rgba(220, 38, 38, 0.95)",
   style: "icon",
   warningColor: "rgba(234, 179, 8, 0.95)"
+});
+const DEFAULT_TARGET_INVALIDATION_DECORATION_OPTIONS = Object.freeze({
+  color: "rgba(37, 99, 235, 0.95)",
+  enabled: true,
+  includeReferences: true
 });
 
 function normalizeNumberArray(value, fallback) {
@@ -97,6 +103,18 @@ function getTargetStatusDecorationOptions(config = vscode.workspace.getConfigura
   };
 }
 
+function getTargetInvalidationDecorationOptions(config = vscode.workspace.getConfiguration("tarborist")) {
+  const color = String(
+    config.get("targetInvalidationDecorations.color", DEFAULT_TARGET_INVALIDATION_DECORATION_OPTIONS.color) || ""
+  ).trim() || DEFAULT_TARGET_INVALIDATION_DECORATION_OPTIONS.color;
+
+  return {
+    color,
+    enabled: Boolean(config.get("targetInvalidationDecorations.enabled", DEFAULT_TARGET_INVALIDATION_DECORATION_OPTIONS.enabled)),
+    includeReferences: Boolean(config.get("targetInvalidationDecorations.includeReferences", DEFAULT_TARGET_INVALIDATION_DECORATION_OPTIONS.includeReferences))
+  };
+}
+
 function getTargetHeatmapMetricValue(meta, metric) {
   if (!meta) {
     return null;
@@ -137,13 +155,426 @@ function getHeatmapTargets(index) {
   return index.completionTargets || index.targets || new Map();
 }
 
+function getHeatmapRefs(index) {
+  return index.completionRefs || index.refs || [];
+}
+
+function getTargetCueMode(target) {
+  const cueText = target && target.options ? target.options.cue : null;
+  if (!cueText) {
+    return null;
+  }
+
+  const namedMode = /\bmode\s*=\s*["'](always|never)["']/i.exec(cueText);
+  if (namedMode) {
+    return namedMode[1].toLowerCase();
+  }
+
+  const positionalMode = /(?:^|::)tar_cue\s*\(\s*["'](always|never)["']/i.exec(cueText);
+  if (positionalMode) {
+    return positionalMode[1].toLowerCase();
+  }
+
+  return null;
+}
+
+function getTargetCueModes(index, targetNames) {
+  const cueModes = new Map();
+  const targets = getHeatmapTargets(index);
+
+  for (const name of targetNames) {
+    cueModes.set(name, getTargetCueMode(targets.get(name)));
+  }
+
+  return cueModes;
+}
+
 function isTargetNotBuilt(meta) {
   return !meta || !meta.time;
 }
 
-function collectTargetHeatmapAssignments(index, filePath, options) {
+function positionToOffset(text, position) {
+  let offset = 0;
+  let line = 0;
+
+  while (line < position.line) {
+    const nextBreak = text.indexOf("\n", offset);
+    if (nextBreak === -1) {
+      return text.length;
+    }
+
+    offset = nextBreak + 1;
+    line += 1;
+  }
+
+  return Math.min(text.length, offset + position.character);
+}
+
+function sliceRangeText(text, range) {
+  if (!text || !range) {
+    return "";
+  }
+
+  const start = positionToOffset(text, range.start);
+  const end = positionToOffset(text, range.end);
+  return text.slice(start, end);
+}
+
+function hashText(text) {
+  return crypto.createHash("sha1").update(text).digest("hex");
+}
+
+function buildTargetCodeHashes(index, readFile) {
+  const hashes = new Map();
+  if (!index || typeof readFile !== "function") {
+    return hashes;
+  }
+
+  const textCache = new Map();
+  const readSource = (file) => {
+    const normalized = normalizeFile(file);
+    if (!textCache.has(normalized)) {
+      textCache.set(normalized, readFile(normalized));
+    }
+
+    return textCache.get(normalized);
+  };
+
+  for (const target of getHeatmapTargets(index).values()) {
+    if (!target || target.generated || !target.fullRange || !target.file) {
+      continue;
+    }
+
+    try {
+      const text = sliceRangeText(readSource(target.file), target.fullRange);
+      hashes.set(target.name, hashText(`${target.origin || "tar_target"}\u0000${text}`));
+    } catch (_error) {
+      continue;
+    }
+  }
+
+  return hashes;
+}
+
+function buildTargetMetaStamps(index) {
+  const stamps = new Map();
+  if (!index || !index.targetsMeta) {
+    return stamps;
+  }
+
+  for (const [name, meta] of index.targetsMeta.entries()) {
+    if (!meta) {
+      stamps.set(name, "");
+      continue;
+    }
+
+    if (meta.raw) {
+      stamps.set(name, JSON.stringify(meta.raw));
+      continue;
+    }
+
+    stamps.set(name, JSON.stringify([
+      meta.time || "",
+      meta.bytes || "",
+      meta.runtime || "",
+      meta.warnings || "",
+      meta.error || ""
+    ]));
+  }
+
+  return stamps;
+}
+
+function normalizeInvalidationState(previousState = null) {
+  const state = previousState || {};
+  return {
+    baselineHashes: new Map(state.baselineHashes || []),
+    builtRevisions: new Map(state.builtRevisions || []),
+    contentRevisions: new Map(state.contentRevisions || []),
+    initialized: Boolean(state.initialized),
+    metaStamps: new Map(state.metaStamps || []),
+    nextRevision: Number.isFinite(state.nextRevision) && state.nextRevision > 0 ? state.nextRevision : 1,
+    observedHashes: new Map(state.observedHashes || [])
+  };
+}
+
+function computeInvalidationRevisions(index, targetNames, contentRevisions) {
+  const graph = index && (index.completionGraph || index.graph);
+  const downstream = graph && graph.upstreamToDownstream ? graph.upstreamToDownstream : new Map();
+  const cueModes = getTargetCueModes(index, targetNames);
+  const revisions = new Map();
+  const queue = [];
+
+  for (const name of targetNames) {
+    const revision = contentRevisions.get(name) || 0;
+    revisions.set(name, revision);
+    if (revision > 0) {
+      queue.push({ name, revision });
+    }
+  }
+
+  while (queue.length) {
+    const { name, revision } = queue.pop();
+    if (cueModes.get(name) === "never") {
+      continue;
+    }
+
+    for (const child of downstream.get(name) || []) {
+      if (cueModes.get(child) === "never") {
+        continue;
+      }
+
+      if (revision > (revisions.get(child) || 0)) {
+        revisions.set(child, revision);
+        queue.push({ name: child, revision });
+      }
+    }
+  }
+
+  return revisions;
+}
+
+function computeAlwaysAffectedTargets(index, targetNames) {
+  const graph = index && (index.completionGraph || index.graph);
+  const downstream = graph && graph.upstreamToDownstream ? graph.upstreamToDownstream : new Map();
+  const cueModes = getTargetCueModes(index, targetNames);
+  const changedTargets = new Set();
+  const downstreamTargets = new Set();
+
+  for (const name of targetNames) {
+    if (cueModes.get(name) !== "always") {
+      continue;
+    }
+
+    changedTargets.add(name);
+    const queue = [name];
+    const seen = new Set([name]);
+
+    while (queue.length) {
+      const current = queue.pop();
+      for (const child of downstream.get(current) || []) {
+        if (seen.has(child) || cueModes.get(child) === "never") {
+          continue;
+        }
+
+        seen.add(child);
+        if (cueModes.get(child) === "always") {
+          changedTargets.add(child);
+        } else {
+          downstreamTargets.add(child);
+        }
+        queue.push(child);
+      }
+    }
+  }
+
+  return {
+    changedTargets,
+    downstreamTargets
+  };
+}
+
+function reconcileTargetInvalidationState(index, readFile, previousState = null) {
+  const state = normalizeInvalidationState(previousState);
+  const currentHashes = buildTargetCodeHashes(index, readFile);
+  const currentMetaStamps = buildTargetMetaStamps(index);
+  const targetNames = new Set(currentHashes.keys());
+  const alwaysAffectedTargets = computeAlwaysAffectedTargets(index, targetNames);
+
+  if (!state.initialized) {
+    for (const [name, hash] of currentHashes.entries()) {
+      state.baselineHashes.set(name, hash);
+      state.builtRevisions.set(name, 0);
+      state.contentRevisions.set(name, 0);
+      state.metaStamps.set(name, currentMetaStamps.get(name) || "");
+      state.observedHashes.set(name, hash);
+    }
+
+    state.initialized = true;
+    return {
+      ...state,
+      changedTargets: alwaysAffectedTargets.changedTargets,
+      downstreamTargets: alwaysAffectedTargets.downstreamTargets
+    };
+  }
+
+  for (const name of [...state.observedHashes.keys()]) {
+    if (!targetNames.has(name)) {
+      state.baselineHashes.delete(name);
+      state.builtRevisions.delete(name);
+      state.contentRevisions.delete(name);
+      state.metaStamps.delete(name);
+      state.observedHashes.delete(name);
+    }
+  }
+
+  const pendingBuilds = new Set();
+  for (const [name, currentHash] of currentHashes.entries()) {
+    const currentStamp = currentMetaStamps.get(name) || "";
+
+    if (!state.observedHashes.has(name)) {
+      const revision = state.nextRevision;
+      state.nextRevision += 1;
+      state.observedHashes.set(name, currentHash);
+      state.contentRevisions.set(name, revision);
+      state.metaStamps.set(name, currentStamp);
+      if (currentStamp) {
+        state.baselineHashes.set(name, currentHash);
+        state.builtRevisions.set(name, revision);
+      } else {
+        state.builtRevisions.set(name, 0);
+      }
+      continue;
+    }
+
+    const previousObservedHash = state.observedHashes.get(name);
+    const previousBuiltHash = state.baselineHashes.get(name);
+    const previousBuiltRevision = state.builtRevisions.get(name) || 0;
+    if (currentHash !== previousObservedHash) {
+      state.observedHashes.set(name, currentHash);
+      if (previousBuiltHash && currentHash === previousBuiltHash) {
+        state.contentRevisions.set(name, previousBuiltRevision);
+      } else {
+        state.contentRevisions.set(name, state.nextRevision);
+        state.nextRevision += 1;
+      }
+    }
+
+    const previousStamp = state.metaStamps.get(name) || "";
+    if (currentStamp && currentStamp !== previousStamp) {
+      state.baselineHashes.set(name, currentHash);
+      pendingBuilds.add(name);
+    }
+
+    state.metaStamps.set(name, currentStamp);
+  }
+
+  const invalidationRevisions = computeInvalidationRevisions(index, targetNames, state.contentRevisions);
+  for (const name of pendingBuilds) {
+    state.builtRevisions.set(name, invalidationRevisions.get(name) || 0);
+  }
+
+  const changedTargets = new Set();
+  const downstreamTargets = new Set(alwaysAffectedTargets.downstreamTargets);
+  for (const [name, currentHash] of currentHashes.entries()) {
+    if (alwaysAffectedTargets.changedTargets.has(name)) {
+      changedTargets.add(name);
+      downstreamTargets.delete(name);
+      continue;
+    }
+
+    const builtHash = state.baselineHashes.get(name) || null;
+    const builtRevision = state.builtRevisions.get(name) || 0;
+    const contentRevision = state.contentRevisions.get(name) || 0;
+    const invalidationRevision = invalidationRevisions.get(name) || 0;
+    const directlyInvalidated = !builtHash || currentHash !== builtHash || builtRevision < contentRevision;
+
+    if (directlyInvalidated) {
+      changedTargets.add(name);
+      downstreamTargets.delete(name);
+      continue;
+    }
+
+    if (builtRevision < invalidationRevision) {
+      downstreamTargets.add(name);
+    }
+  }
+
+  return {
+    ...state,
+    changedTargets,
+    downstreamTargets
+  };
+}
+
+function dedupeAssignments(assignments) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const assignment of assignments) {
+    const range = assignment && assignment.range;
+    if (!range) {
+      continue;
+    }
+
+    const key = [
+      assignment.targetName || "",
+      assignment.hoverMessage || "",
+      range.start.line,
+      range.start.character,
+      range.end.line,
+      range.end.character
+    ].join(":");
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    deduped.push(assignment);
+  }
+
+  return deduped;
+}
+
+function buildStatusHoverMessage(kind, targetName, detail = null) {
+  const header = kind === "error"
+    ? `Last build recorded an error for target '${targetName}'.`
+    : `Last build recorded a warning for target '${targetName}'.`;
+  const normalizedDetail = String(detail || "").trim();
+  return normalizedDetail ? `${header}\n${normalizedDetail}` : header;
+}
+
+function buildInvalidationHoverMessage(kind, targetName) {
+  return kind === "changed"
+    ? `Target '${targetName}' has changed since the last tracked build.`
+    : `Target '${targetName}' may be invalidated by upstream code changes.`;
+}
+
+function collectTargetMarkerAssignments(index, filePath, targetNames, options = {}) {
+  if (!index || !targetNames || !targetNames.size) {
+    return [];
+  }
+
+  const {
+    hoverMessageBuilder = null,
+    includeReferences = true
+  } = options;
+  const normalizedFile = normalizeFile(filePath);
+  const assignments = [];
+  for (const target of getHeatmapTargets(index).values()) {
+    if (!target || target.generated || !target.nameRange || normalizeFile(target.file) !== normalizedFile || !targetNames.has(target.name)) {
+      continue;
+    }
+
+    assignments.push({
+      range: target.nameRange,
+      targetName: target.name,
+      hoverMessage: hoverMessageBuilder ? hoverMessageBuilder(target.name) : undefined
+    });
+  }
+
+  if (includeReferences) {
+    for (const ref of getHeatmapRefs(index)) {
+      if (!ref || !ref.range || normalizeFile(ref.file) !== normalizedFile || !targetNames.has(ref.targetName)) {
+        continue;
+      }
+
+      assignments.push({
+        range: ref.range,
+        targetName: ref.targetName,
+        hoverMessage: hoverMessageBuilder ? hoverMessageBuilder(ref.targetName) : undefined
+      });
+    }
+  }
+
+  return dedupeAssignments(assignments);
+}
+
+function collectTargetHeatmapAssignments(index, filePath, options, invalidationState = null, invalidationOptions = DEFAULT_TARGET_INVALIDATION_DECORATION_OPTIONS) {
   const assignments = {
     buckets: new Map(),
+    changed: [],
+    downstream: [],
     error: [],
     notBuilt: [],
     warning: []
@@ -161,11 +592,13 @@ function collectTargetHeatmapAssignments(index, filePath, options) {
     const meta = index.targetsMeta && index.targetsMeta.get(target.name);
     if (meta && meta.hasError) {
       assignments.error.push({
+        hoverMessage: buildStatusHoverMessage("error", target.name, meta.error),
         range: target.nameRange,
         targetName: target.name
       });
     } else if (meta && meta.hasWarnings) {
       assignments.warning.push({
+        hoverMessage: buildStatusHoverMessage("warning", target.name, meta.warnings),
         range: target.nameRange,
         targetName: target.name
       });
@@ -199,7 +632,34 @@ function collectTargetHeatmapAssignments(index, filePath, options) {
     });
   }
 
+  assignments.changed = collectTargetMarkerAssignments(index, filePath, invalidationState && invalidationState.changedTargets, {
+    hoverMessageBuilder: (targetName) => buildInvalidationHoverMessage("changed", targetName),
+    includeReferences: invalidationOptions.includeReferences
+  });
+  assignments.downstream = collectTargetMarkerAssignments(index, filePath, invalidationState && invalidationState.downstreamTargets, {
+    hoverMessageBuilder: (targetName) => buildInvalidationHoverMessage("downstream", targetName),
+    includeReferences: invalidationOptions.includeReferences
+  });
+
   return assignments;
+}
+
+function createIconDecorationOptions(color, iconText, placement = "after") {
+  const baseOptions = {
+    rangeBehavior: vscode.DecorationRangeBehavior
+      ? vscode.DecorationRangeBehavior.ClosedClosed
+      : undefined
+  };
+
+  return {
+    ...baseOptions,
+    [placement]: {
+      color,
+      contentText: iconText,
+      fontSize: "1.05em",
+      margin: "0"
+    }
+  };
 }
 
 function createStatusDecorationOptions(color, style, iconText) {
@@ -210,15 +670,7 @@ function createStatusDecorationOptions(color, style, iconText) {
   };
 
   if (style === "icon") {
-    return {
-      ...baseOptions,
-      after: {
-        color,
-        contentText: iconText,
-        fontSize: "1.05em",
-        margin: "0"
-      }
-    };
+    return createIconDecorationOptions(color, iconText, "after");
   }
 
   return {
@@ -230,10 +682,13 @@ function createStatusDecorationOptions(color, style, iconText) {
 class TargetHeatmapController {
   constructor(indexManager) {
     this.indexManager = indexManager;
+    this.changedDecorationType = null;
     this.decorationKey = "";
     this.errorDecorationType = null;
+    this.invalidationStates = new Map();
     this.notBuiltDecorationType = null;
     this.decorationTypes = [];
+    this.downstreamDecorationType = null;
     this.warningDecorationType = null;
   }
 
@@ -254,19 +709,30 @@ class TargetHeatmapController {
       this.errorDecorationType.dispose();
     }
 
+    if (this.changedDecorationType) {
+      this.changedDecorationType.dispose();
+    }
+
+    if (this.downstreamDecorationType) {
+      this.downstreamDecorationType.dispose();
+    }
+
     if (this.warningDecorationType) {
       this.warningDecorationType.dispose();
     }
 
     this.decorationTypes = [];
+    this.changedDecorationType = null;
+    this.downstreamDecorationType = null;
     this.errorDecorationType = null;
     this.notBuiltDecorationType = null;
     this.warningDecorationType = null;
     this.decorationKey = "";
   }
 
-  ensureDecorationTypes(options, statusOptions) {
+  ensureDecorationTypes(options, statusOptions, invalidationOptions) {
     const key = JSON.stringify({
+      invalidation: invalidationOptions,
       notBuiltColor: options.notBuiltColor,
       palette: options.palette,
       status: statusOptions
@@ -285,12 +751,18 @@ class TargetHeatmapController {
     this.errorDecorationType = vscode.window.createTextEditorDecorationType(
       createStatusDecorationOptions(statusOptions.errorColor, statusOptions.style, "\u2716")
     );
+    this.changedDecorationType = vscode.window.createTextEditorDecorationType(
+      createIconDecorationOptions(invalidationOptions.color, "\u25CF", "before")
+    );
     this.decorationTypes = options.palette.map((backgroundColor) => vscode.window.createTextEditorDecorationType({
       backgroundColor,
       rangeBehavior: vscode.DecorationRangeBehavior
         ? vscode.DecorationRangeBehavior.ClosedClosed
         : undefined
     }));
+    this.downstreamDecorationType = vscode.window.createTextEditorDecorationType(
+      createIconDecorationOptions(invalidationOptions.color, "\u25D0", "before")
+    );
     this.warningDecorationType = vscode.window.createTextEditorDecorationType(
       createStatusDecorationOptions(statusOptions.warningColor, statusOptions.style, "\u25B2")
     );
@@ -306,8 +778,16 @@ class TargetHeatmapController {
       editor.setDecorations(this.errorDecorationType, []);
     }
 
+    if (this.changedDecorationType) {
+      editor.setDecorations(this.changedDecorationType, []);
+    }
+
     for (const decorationType of this.decorationTypes) {
       editor.setDecorations(decorationType, []);
+    }
+
+    if (this.downstreamDecorationType) {
+      editor.setDecorations(this.downstreamDecorationType, []);
     }
 
     if (this.warningDecorationType) {
@@ -315,15 +795,34 @@ class TargetHeatmapController {
     }
   }
 
-  getStatusDecorationEntries(assignments, style) {
-    if (style !== "icon") {
-      return assignments.map((assignment) => toVsCodeRange(assignment.range));
+  getMarkerDecorationEntries(assignments, style) {
+    return assignments.map((assignment) => ({
+      hoverMessage: style === "icon" ? undefined : assignment.hoverMessage,
+      range: toVsCodeRange(style === "icon"
+        ? {
+          start: assignment.range.start,
+          end: assignment.range.start
+        }
+        : assignment.range)
+    }));
+  }
+
+  reconcileInvalidationState(root, index) {
+    if (!root || !index || !this.indexManager || typeof this.indexManager.readFile !== "function") {
+      return {
+        changedTargets: new Set(),
+        downstreamTargets: new Set()
+      };
     }
 
-    return assignments.map((assignment) => toVsCodeRange({
-      start: assignment.range.start,
-      end: assignment.range.start
-    }));
+    const normalizedRoot = normalizeFile(root);
+    const nextState = reconcileTargetInvalidationState(
+      index,
+      (file) => this.indexManager.readFile(file),
+      this.invalidationStates.get(normalizedRoot) || null
+    );
+    this.invalidationStates.set(normalizedRoot, nextState);
+    return nextState;
   }
 
   async updateEditor(editor, indexOverride = null) {
@@ -334,7 +833,8 @@ class TargetHeatmapController {
     const config = vscode.workspace.getConfiguration("tarborist");
     const options = getTargetHeatmapOptions(config);
     const statusOptions = getTargetStatusDecorationOptions(config);
-    if (!options.enabled && !statusOptions.enabled) {
+    const invalidationOptions = getTargetInvalidationDecorationOptions(config);
+    if (!options.enabled && !statusOptions.enabled && !invalidationOptions.enabled) {
       this.clearEditor(editor);
       return;
     }
@@ -345,8 +845,15 @@ class TargetHeatmapController {
       return;
     }
 
-    this.ensureDecorationTypes(options, statusOptions);
-    const assignments = collectTargetHeatmapAssignments(index, editor.document.uri.fsPath, options);
+    const root = this.indexManager.getPipelineRootForUri
+      ? this.indexManager.getPipelineRootForUri(editor.document.uri)
+      : null;
+    const invalidationState = invalidationOptions.enabled
+      ? this.reconcileInvalidationState(root, index)
+      : null;
+
+    this.ensureDecorationTypes(options, statusOptions, invalidationOptions);
+    const assignments = collectTargetHeatmapAssignments(index, editor.document.uri.fsPath, options, invalidationState, invalidationOptions);
     if (this.notBuiltDecorationType) {
       editor.setDecorations(
         this.notBuiltDecorationType,
@@ -360,7 +867,16 @@ class TargetHeatmapController {
       editor.setDecorations(
         this.errorDecorationType,
         statusOptions.enabled
-          ? this.getStatusDecorationEntries(assignments.error, statusOptions.style)
+          ? this.getMarkerDecorationEntries(assignments.error, statusOptions.style)
+          : []
+      );
+    }
+
+    if (this.changedDecorationType) {
+      editor.setDecorations(
+        this.changedDecorationType,
+        invalidationOptions.enabled
+          ? this.getMarkerDecorationEntries(assignments.changed, "icon")
           : []
       );
     }
@@ -372,11 +888,20 @@ class TargetHeatmapController {
       editor.setDecorations(this.decorationTypes[bucket], ranges);
     }
 
+    if (this.downstreamDecorationType) {
+      editor.setDecorations(
+        this.downstreamDecorationType,
+        invalidationOptions.enabled
+          ? this.getMarkerDecorationEntries(assignments.downstream, "icon")
+          : []
+      );
+    }
+
     if (this.warningDecorationType) {
       editor.setDecorations(
         this.warningDecorationType,
         statusOptions.enabled
-          ? this.getStatusDecorationEntries(assignments.warning, statusOptions.style)
+          ? this.getMarkerDecorationEntries(assignments.warning, statusOptions.style)
           : []
       );
     }
@@ -384,6 +909,7 @@ class TargetHeatmapController {
 
   async refreshEditorsForRoot(root, index) {
     const normalizedRoot = normalizeFile(root);
+    this.reconcileInvalidationState(normalizedRoot, index);
     const visibleEditors = vscode.window.visibleTextEditors || [];
     const updates = visibleEditors
       .filter((editor) => this.indexManager.getPipelineRootForUri(editor.document.uri) === normalizedRoot)
@@ -398,13 +924,21 @@ class TargetHeatmapController {
 
 module.exports = {
   DEFAULT_TARGET_HEATMAP_OPTIONS,
+  DEFAULT_TARGET_INVALIDATION_DECORATION_OPTIONS,
   DEFAULT_TARGET_STATUS_DECORATION_OPTIONS,
   TargetHeatmapController,
+  buildTargetCodeHashes,
+  buildTargetMetaStamps,
   collectTargetHeatmapAssignments,
+  computeAlwaysAffectedTargets,
+  computeInvalidationRevisions,
   createStatusDecorationOptions,
   getTargetHeatmapBucket,
   getTargetHeatmapMetricValue,
   getTargetHeatmapOptions,
+  getTargetInvalidationDecorationOptions,
   getTargetStatusDecorationOptions,
-  isTargetNotBuilt
+  isTargetNotBuilt,
+  normalizeInvalidationState,
+  reconcileTargetInvalidationState
 };

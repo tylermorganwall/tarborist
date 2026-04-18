@@ -528,6 +528,8 @@ async function activate(context) {
       refreshTarLoadHereContext();
       refreshExecuteInPlaceContext();
     }
+
+    void targetHeatmapController.refreshVisibleEditors();
   }));
   context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((document) => {
     if (vscode.window.activeTextEditor && document === vscode.window.activeTextEditor.document) {
@@ -538,7 +540,11 @@ async function activate(context) {
     }
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
-    if (event.affectsConfiguration("tarborist.targetHeatmap")) {
+    if (
+      event.affectsConfiguration("tarborist.targetHeatmap")
+      || event.affectsConfiguration("tarborist.targetStatusDecorations")
+      || event.affectsConfiguration("tarborist.targetInvalidationDecorations")
+    ) {
       void targetHeatmapController.refreshVisibleEditors();
     }
 

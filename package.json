@@ -5,7 +5,7 @@
   "description": "Static analysis for navigating and debugging complex R targets pipelines",
   "icon": "tarborist.png",
   "license": "GPL-3.0-or-later",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/tylermorganwall/tarborist.git"
@@ -135,6 +135,21 @@
           "type": "string",
           "default": "rgba(234, 179, 8, 0.95)",
           "markdownDescription": "Wavy underline color for targets whose last build recorded a warning but not an error."
+        },
+        "tarborist.targetInvalidationDecorations.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Mark targets whose code has changed since the last tracked build, and downstream targets that may also be invalidated."
+        },
+        "tarborist.targetInvalidationDecorations.includeReferences": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Also mark references to invalidated targets throughout the file. Turn this off to show invalidation markers only on target definitions."
+        },
+        "tarborist.targetInvalidationDecorations.color": {
+          "type": "string",
+          "default": "rgba(37, 99, 235, 0.95)",
+          "markdownDescription": "Color of the leading icons used for both directly invalidated targets and downstream targets that may also be invalidated."
         }
       }
     },

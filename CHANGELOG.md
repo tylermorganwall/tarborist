@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.12.0] - 2026-04-17
+
+### Added
+
+- Target invalidation decorations that detect code changes in written targets, mark directly changed targets, and separately mark downstream targets that may also be invalidated.
+
+### Changed
+
+- Invalidation decorations can now be configured to appear either on target definitions only or on both definitions and target references throughout the file.
+- Status and invalidation icon decorations now defer to the normal target hover instead of attaching their own icon-specific hover text.
+
 ## [0.11.0] - 2026-04-15
 
 ### Added
