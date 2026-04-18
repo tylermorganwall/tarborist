@@ -696,7 +696,7 @@ test("TargetHeatmapController can render invalidation icons for changed and down
   ));
   const downstreamDecorationType = createdDecorationTypes.find((decorationType) => (
     decorationType.options.before
-    && decorationType.options.before.contentText === "\u25CD"
+    && decorationType.options.before.contentText === "\u25D0"
     && decorationType.options.before.color === "#0055ff"
   ));
 
