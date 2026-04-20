@@ -7,6 +7,7 @@ const vscode = require("vscode");
 const { findNodeAt, matchesCall, unpackArguments } = require("../parser/ast");
 const { parseText } = require("../parser/treeSitter");
 const { getTargetLocation } = require("../targetLocation");
+const { formatTimestampInTimeZone, resolveDisplayTimeZone } = require("../index/targetsMeta");
 const { formatLocation, normalizeFile } = require("../util/paths");
 const { containsPosition } = require("../util/ranges");
 const { findGeneratorAtPosition, findTargetAtPosition } = require("./shared");
@@ -238,10 +239,26 @@ function formatMetaUpdated(meta) {
 
   const age = formatMetaAge(meta);
   if (!age) {
-    return `\`${meta.time}\``;
+    return `\`${formatMetaTime(meta)}\``;
   }
 
-  return `\`${age}, ${meta.time}\``;
+  return `\`${age}, ${formatMetaTime(meta)}\``;
+}
+
+function getConfiguredTimeZone() {
+  if (!vscode.workspace || typeof vscode.workspace.getConfiguration !== "function") {
+    return "";
+  }
+
+  return vscode.workspace.getConfiguration("tarborist").get("timeZone", "");
+}
+
+function formatMetaTime(meta) {
+  if (!meta || !Number.isFinite(meta.timestampMs)) {
+    return meta && meta.time ? meta.time : "";
+  }
+
+  return formatTimestampInTimeZone(meta.timestampMs, resolveDisplayTimeZone(getConfiguredTimeZone()));
 }
 
 function formatMetaAge(meta) {

@@ -37,6 +37,11 @@
           },
           "markdownDescription": "Additional `tar_target()`-like factory names to treat as single-target factories during static analysis. Use this only for factories that create exactly one target and follow the same `name` / `command` / `pattern` shape as `tar_target()`, for example `tar_parquet`."
         },
+        "tarborist.timeZone": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "IANA timezone used for target metadata timestamps, for example `America/New_York` or `Europe/London`. Leave blank to use the system timezone detected by the extension host."
+        },
         "tarborist.executeInPlace.enabled": {
           "type": "boolean",
           "default": true,

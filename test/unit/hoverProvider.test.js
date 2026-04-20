@@ -20,7 +20,7 @@ function buildIndex(fixtureName) {
   };
 }
 
-function loadHoverProviderWithMockVscode() {
+function loadHoverProviderWithMockVscode(configValues = { timeZone: "UTC" }) {
   const mockVscode = {
     Hover: class Hover {
       constructor(contents) {
@@ -36,6 +36,17 @@ function loadHoverProviderWithMockVscode() {
 
       appendMarkdown(text) {
         this.value += text;
+      }
+    },
+    workspace: {
+      getConfiguration() {
+        return {
+          get(key, fallback) {
+            return Object.prototype.hasOwnProperty.call(configValues, key)
+              ? configValues[key]
+              : fallback;
+          }
+        };
       }
     }
   };
@@ -194,6 +205,39 @@ test("hover shows runtime metadata from _targets/meta/meta", async () => {
   assert.match(markdown, /warning text/);
   assert.match(markdown, /\*\*Error\*\*/);
   assert.match(markdown, /error text/);
+});
+
+test("hover formats target metadata timestamps in the configured timezone", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode({
+    timeZone: "America/New_York"
+  });
+  const { index, root } = buildIndex("meta_hover");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(x, 1)"));
+  const position = { line: lineIndex, character: text.split("\n")[lineIndex].indexOf("x") };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const now = Date.parse("2026-04-06T12:00:00.000Z");
+  const originalDateNow = Date.now;
+  Date.now = () => now;
+  let hover;
+  try {
+    hover = await provider.provideHover(document, position);
+  } finally {
+    Date.now = originalDateNow;
+  }
+  const markdown = hover.contents[0].value;
+
+  assert.match(markdown, /2025-10-10 11:56:12\.925 EDT/);
 });
 
 test("hover shows not built yet when a meta row exists without a timestamp", async () => {

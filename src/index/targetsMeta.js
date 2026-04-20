@@ -38,12 +38,78 @@ function splitMetaLine(line, columnCount) {
   return head;
 }
 
-function pad2(value) {
-  return String(value).padStart(2, "0");
-}
-
 function pad3(value) {
   return String(value).padStart(3, "0");
+}
+
+function detectDefaultTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch (_error) {
+    return "UTC";
+  }
+}
+
+function isValidTimeZone(timeZone) {
+  if (!timeZone) {
+    return false;
+  }
+
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date(0));
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function resolveDisplayTimeZone(timeZone = "") {
+  const configured = String(timeZone || "").trim();
+  if (configured && isValidTimeZone(configured)) {
+    return configured;
+  }
+
+  const detected = detectDefaultTimeZone();
+  return isValidTimeZone(detected) ? detected : "UTC";
+}
+
+function formatTimestampInTimeZone(timestampMs, timeZone = "") {
+  if (!Number.isFinite(timestampMs)) {
+    return null;
+  }
+
+  const resolvedTimeZone = resolveDisplayTimeZone(timeZone);
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+    hour12: false,
+    minute: "2-digit",
+    month: "2-digit",
+    second: "2-digit",
+    timeZone: resolvedTimeZone,
+    timeZoneName: "short",
+    year: "numeric"
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(new Date(timestampMs)).map((part) => [part.type, part.value]));
+
+  return [
+    parts.year,
+    "-",
+    parts.month,
+    "-",
+    parts.day,
+    " ",
+    parts.hour,
+    ":",
+    parts.minute,
+    ":",
+    parts.second,
+    ".",
+    pad3(timestampMs % 1000),
+    " ",
+    parts.timeZoneName || resolvedTimeZone
+  ].join("");
 }
 
 function parseMetaTime(raw) {
@@ -58,25 +124,9 @@ function parseMetaTime(raw) {
   }
 
   const totalMilliseconds = Math.round(days * 24 * 60 * 60 * 1000);
-  const date = new Date(totalMilliseconds);
 
   return {
-    formatted: [
-      date.getUTCFullYear(),
-      "-",
-      pad2(date.getUTCMonth() + 1),
-      "-",
-      pad2(date.getUTCDate()),
-      " ",
-      pad2(date.getUTCHours()),
-      ":",
-      pad2(date.getUTCMinutes()),
-      ":",
-      pad2(date.getUTCSeconds()),
-      ".",
-      pad3(date.getUTCMilliseconds()),
-      " UTC"
-    ].join(""),
+    formatted: formatTimestampInTimeZone(totalMilliseconds, "UTC"),
     timestampMs: totalMilliseconds
   };
 }
@@ -210,6 +260,9 @@ function readTargetsMeta(workspaceRoot, readFile) {
 }
 
 module.exports = {
+  detectDefaultTimeZone,
+  formatTimestampInTimeZone,
   parseTargetsMeta,
-  readTargetsMeta
+  readTargetsMeta,
+  resolveDisplayTimeZone
 };
