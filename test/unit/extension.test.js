@@ -621,6 +621,103 @@ test("executeInPlace() uses Positron's current-statement execution for braced re
   assert.equal(editor.revealCalls[0].revealType, "inCenterIfOutsideViewport");
 });
 
+test("executeInPlace() skips an empty blank line so the cursor stays indented", async () => {
+  const source = [
+    "{",
+    "  #I have some text here",
+    "  ggplot2::ggplot(mtcars) +",
+    "    ggplot2::aes(x = mpg, y = cyl) + ",
+    "    ggplot2::geom_line()",
+    "",
+    "  #Whoa",
+    "  lm(mpg ~ cyl, data = mtcars)",
+    "}"
+  ].join("\n");
+  const cursorLine = 3;
+  const cursorCharacter = source.split("\n")[cursorLine].length;
+  const expectedLine = 6;
+  const expectedCharacter = 2;
+  const editor = createEditor(source, {
+    filePath: "/tmp/_targets.R",
+    visibleRange: makeLineRange(0, 0, 8, 1)
+  });
+  editor.selection = {
+    anchor: { line: cursorLine, character: cursorCharacter },
+    active: { line: cursorLine, character: cursorCharacter },
+    start: { line: cursorLine, character: cursorCharacter },
+    end: { line: cursorLine, character: cursorCharacter }
+  };
+  editor.selections = [editor.selection];
+  const { executeCommandCalls, executeInPlace } = loadExtensionWithMocks({
+    positronApi: {},
+    executeCommandImpl: async () => {}
+  });
+  const indexManager = createIndexManager(createIndex({
+    completionRegions: [{
+      file: "/tmp/_targets.R",
+      range: makeLineRange(0, 0, 8, 1)
+    }]
+  }));
+
+  const succeeded = await executeInPlace(editor, indexManager);
+
+  assert.equal(succeeded, true);
+  assert.deepEqual(executeCommandCalls, [{
+    args: [],
+    command: "workbench.action.positronConsole.executeCodeWithoutAdvancing"
+  }]);
+  assert.equal(editor.selection.active.line, expectedLine);
+  assert.equal(editor.selection.active.character, expectedCharacter);
+  assert.equal(editor.revealCalls[0].revealType, "inCenterIfOutsideViewport");
+});
+
+test("executeInPlace() moves to the next statement when no blank line follows the current expression", async () => {
+  const source = [
+    "{",
+    "  ggplot2::ggplot(mtcars) +",
+    "    ggplot2::aes(x = mpg, y = cyl) + ",
+    "    ggplot2::geom_line()",
+    "  lm(mpg ~ cyl, data = mtcars)",
+    "}"
+  ].join("\n");
+  const cursorLine = 2;
+  const cursorCharacter = source.split("\n")[cursorLine].length;
+  const expectedLine = 4;
+  const expectedCharacter = 2;
+  const editor = createEditor(source, {
+    filePath: "/tmp/_targets.R",
+    visibleRange: makeLineRange(0, 0, 5, 1)
+  });
+  editor.selection = {
+    anchor: { line: cursorLine, character: cursorCharacter },
+    active: { line: cursorLine, character: cursorCharacter },
+    start: { line: cursorLine, character: cursorCharacter },
+    end: { line: cursorLine, character: cursorCharacter }
+  };
+  editor.selections = [editor.selection];
+  const { executeCommandCalls, executeInPlace } = loadExtensionWithMocks({
+    positronApi: {},
+    executeCommandImpl: async () => {}
+  });
+  const indexManager = createIndexManager(createIndex({
+    completionRegions: [{
+      file: "/tmp/_targets.R",
+      range: makeLineRange(0, 0, 5, 1)
+    }]
+  }));
+
+  const succeeded = await executeInPlace(editor, indexManager);
+
+  assert.equal(succeeded, true);
+  assert.deepEqual(executeCommandCalls, [{
+    args: [],
+    command: "workbench.action.positronConsole.executeCodeWithoutAdvancing"
+  }]);
+  assert.equal(editor.selection.active.line, expectedLine);
+  assert.equal(editor.selection.active.character, expectedCharacter);
+  assert.equal(editor.revealCalls[0].revealType, "inCenterIfOutsideViewport");
+});
+
 test("executeInPlace() refreshes dirty documents before resolving the execution region", async () => {
   const editor = createEditor("engineer_features(raw_medium, sleep = 0.9)", {
     cursor: 10,

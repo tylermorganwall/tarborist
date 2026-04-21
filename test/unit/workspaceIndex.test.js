@@ -273,6 +273,21 @@ test("reads runtime metadata from _targets/meta/meta", () => {
   assert.equal(meta.error, "error text");
 });
 
+test("aggregates dynamic branch metadata onto the parent pattern target", () => {
+  const index = buildIndex("meta_dynamic_branches");
+  const meta = index.targetsMeta.get("mapped");
+
+  assert.ok(meta);
+  assert.equal(meta.dynamicBranchAggregate, true);
+  assert.equal(meta.branchCount, 2);
+  assert.equal(meta.builtBranchCount, 2);
+  assert.equal(meta.time, "2025-10-10 16:48:00.000 UTC");
+  assert.equal(meta.runtime, "1.75 s");
+  assert.equal(meta.size, "400 B");
+  assert.equal(meta.hasWarnings, false);
+  assert.equal(meta.hasError, false);
+});
+
 test("labels file-format metadata size as file size", () => {
   const index = buildIndex("meta_file_hover");
   const meta = index.targetsMeta.get("report_file");

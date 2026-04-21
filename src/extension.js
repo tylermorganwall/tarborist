@@ -14,8 +14,11 @@ const { TargetDocumentSymbolProvider } = require("./providers/documentSymbolProv
 const { TargetDocumentLinkProvider } = require("./providers/documentLinkProvider");
 const { TargetHoverProvider } = require("./providers/hoverProvider");
 const { TargetWorkspaceSymbolProvider } = require("./providers/workspaceSymbolProvider");
+const { isCommentNode } = require("./parser/ast");
+const { ensureParserReady, parseText } = require("./parser/treeSitter");
 const { findCompletionRegion, findTargetAtPosition } = require("./providers/shared");
 const { normalizeFile } = require("./util/paths");
+const { containsPosition, rangeFromNode, rangeLength } = require("./util/ranges");
 const { toVsCodeRange } = require("./util/vscode");
 
 const R_DOCUMENT_SELECTORS = [
@@ -217,16 +220,226 @@ function getFullDocumentRange(document) {
   return new vscode.Range(0, 0, lastLine, lastCharacter);
 }
 
-function getRegionEndSelection(region, selection) {
+function rangesEqual(left, right) {
+  return Boolean(
+    left &&
+    right &&
+    left.start.line === right.start.line &&
+    left.start.character === right.start.character &&
+    left.end.line === right.end.line &&
+    left.end.character === right.end.character
+  );
+}
+
+function rangeContainsRange(outer, inner) {
+  return Boolean(
+    outer &&
+    inner &&
+    containsPosition(outer, inner.start) &&
+    containsPosition(outer, inner.end)
+  );
+}
+
+function getSemanticBracedChildren(bracedNode) {
+  return (bracedNode && bracedNode.namedChildren ? bracedNode.namedChildren : [])
+    .filter((child) => !isCommentNode(child));
+}
+
+function isBlankDocumentLine(document, line) {
+  if (!document || !Number.isInteger(line) || line < 0 || typeof document.lineAt !== "function") {
+    return false;
+  }
+
+  try {
+    return document.lineAt(line).text.trim().length === 0;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function getDocumentLineText(document, line) {
+  if (!document || !Number.isInteger(line) || line < 0 || typeof document.lineAt !== "function") {
+    return "";
+  }
+
+  try {
+    return document.lineAt(line).text;
+  } catch (_error) {
+    return "";
+  }
+}
+
+function getLineIndentCharacter(document, line) {
+  const text = getDocumentLineText(document, line);
+  const match = text.match(/\S/);
+  return match ? match.index : 0;
+}
+
+function findNextNonBlankLineIndent(document, startLine, endLine) {
+  for (let line = startLine; line <= endLine; line += 1) {
+    if (!isBlankDocumentLine(document, line)) {
+      return getLineIndentCharacter(document, line);
+    }
+  }
+
+  return 0;
+}
+
+function findNextNonBlankLinePosition(document, startLine, endLine) {
+  for (let line = startLine; line <= endLine; line += 1) {
+    if (!isBlankDocumentLine(document, line)) {
+      return {
+        character: getLineIndentCharacter(document, line),
+        line
+      };
+    }
+  }
+
+  return null;
+}
+
+function makeCollapsedRangeAt(position) {
+  return {
+    end: {
+      character: position.character,
+      line: position.line
+    },
+    start: {
+      character: position.character,
+      line: position.line
+    }
+  };
+}
+
+function findPostExpressionPosition(document, currentRange, nextRange, regionRange) {
+  if (!currentRange) {
+    return regionRange ? regionRange.end : null;
+  }
+
+  const searchEndLine = nextRange ? nextRange.start.line : (regionRange ? regionRange.end.line : currentRange.end.line);
+  for (let line = currentRange.end.line + 1; line < searchEndLine; line += 1) {
+    if (isBlankDocumentLine(document, line)) {
+      const targetIndent = findNextNonBlankLineIndent(document, line + 1, searchEndLine);
+      if (getDocumentLineText(document, line).length >= targetIndent) {
+        return {
+          character: targetIndent,
+          line
+        };
+      }
+
+      const nextNonBlank = findNextNonBlankLinePosition(document, line + 1, searchEndLine);
+      if (nextNonBlank) {
+        return nextNonBlank;
+      }
+
+      return {
+        character: 0,
+        line
+      };
+    }
+  }
+
+  if (nextRange && nextRange.start.line > currentRange.end.line) {
+    return nextRange.start;
+  }
+
+  if (regionRange && regionRange.end.line > currentRange.end.line) {
+    return regionRange.end;
+  }
+
+  return currentRange.end;
+}
+
+function findBracedNodeForRegion(rootNode, region, position) {
+  const candidates = [];
+  let exact = null;
+
+  const visit = (node) => {
+    if (!node || exact) {
+      return;
+    }
+
+    if (node.type === "braced_expression") {
+      const currentRange = rangeFromNode(node);
+      if (rangesEqual(currentRange, region.range)) {
+        exact = node;
+        return;
+      }
+
+      if (rangeContainsRange(region.range, currentRange) && containsPosition(currentRange, position)) {
+        candidates.push(node);
+      }
+    }
+
+    for (const child of node.namedChildren || []) {
+      visit(child);
+    }
+  };
+
+  visit(rootNode);
+  if (exact) {
+    return exact;
+  }
+
+  // If an exact match is unavailable, prefer the outermost braced ancestor
+  // inside the completion region. Inner braces would jump too narrowly.
+  return candidates.sort((left, right) => rangeLength(rangeFromNode(right)) - rangeLength(rangeFromNode(left)))[0] || null;
+}
+
+async function findBracedRegionPostExecutionRange(document, region, position) {
+  if (!document || !region || !region.range || !position) {
+    return null;
+  }
+
+  await ensureParserReady();
+  const tree = parseText(document.getText(), {
+    character: position.character,
+    file: document.uri && document.uri.fsPath,
+    line: position.line,
+    phase: "executeInPlace"
+  });
+  const bracedNode = findBracedNodeForRegion(tree.rootNode, region, position);
+  if (!bracedNode) {
+    return null;
+  }
+
+  const semanticChildren = getSemanticBracedChildren(bracedNode);
+  if (semanticChildren.length <= 1) {
+    return region.range;
+  }
+
+  const currentIndex = semanticChildren.findIndex((child) => containsPosition(rangeFromNode(child), position));
+  if (currentIndex < 0) {
+    return region.range;
+  }
+
+  const currentRange = rangeFromNode(semanticChildren[currentIndex]);
+  const nextChild = semanticChildren[currentIndex + 1] || null;
+  const nextRange = nextChild ? rangeFromNode(nextChild) : null;
+  return makeCollapsedRangeAt(findPostExpressionPosition(document, currentRange, nextRange, region.range));
+}
+
+async function getPostExecutionSelection(document, region, selection, regionText) {
   if (!region || !selection || selectionIsNonEmpty(selection)) {
     return null;
   }
 
+  const point = {
+    character: selection.active.character,
+    line: selection.active.line
+  };
+  const targetRange = regionText.trim().startsWith("{")
+    ? await findBracedRegionPostExecutionRange(document, region, point)
+    : region.range;
+  if (!targetRange) {
+    return null;
+  }
+
   return new vscode.Selection(
-    region.range.end.line,
-    region.range.end.character,
-    region.range.end.line,
-    region.range.end.character
+    targetRange.end.line,
+    targetRange.end.character,
+    targetRange.end.line,
+    targetRange.end.character
   );
 }
 
@@ -299,8 +512,8 @@ async function executeInPlace(editor, indexManager, positronApi = typeof tryAcqu
         line: editor.selection.active.line
       };
       const region = index ? findCompletionRegion(index, file, point) : null;
-      postExecutionSelection = getRegionEndSelection(region, editor.selection);
       const regionText = region ? editor.document.getText(toVsCodeRange(region.range)) : "";
+      postExecutionSelection = await getPostExecutionSelection(editor.document, region, editor.selection, regionText);
 
       if (regionText.trim().startsWith("{")) {
         await vscode.commands.executeCommand(POSITRON_EDITOR_EXECUTE_COMMAND);
@@ -570,8 +783,10 @@ module.exports = {
   EXECUTE_IN_PLACE_CONTEXT_KEY,
   executeInPlace,
   executeTarLoadHere,
+  findBracedRegionPostExecutionRange,
   getSelectedOrCurrentTarget,
   getFullDocumentRange,
+  getPostExecutionSelection,
   registerExecuteInPlaceCommand,
   registerOrganizePipelineCommand,
   registerTarLoadHereCommand,

@@ -200,6 +200,115 @@ function formatMetaDuration(rawSeconds) {
   return parts.join(" ");
 }
 
+function formatDurationSeconds(seconds) {
+  return formatMetaDuration(String(seconds));
+}
+
+function createMetaFromRow(row) {
+  const parsedTime = parseMetaTime(row.time);
+  const warnings = normalizeMetaText(row.warnings);
+  const error = normalizeMetaText(row.error);
+  const format = normalizeMetaText(row.format);
+
+  return {
+    bytes: normalizeMetaText(row.bytes),
+    bytesValue: Number.isFinite(Number(row.bytes)) ? Number(row.bytes) : null,
+    error,
+    format,
+    hasError: Boolean(error),
+    hasWarnings: Boolean(warnings),
+    parent: normalizeMetaText(row.parent),
+    raw: row,
+    runtime: formatMetaDuration(row.seconds),
+    secondsValue: Number.isFinite(Number(row.seconds)) ? Number(row.seconds) : null,
+    size: formatBytes(row.bytes, normalizeMetaText(row.size)),
+    sizeLabel: getMetaSizeLabel(format),
+    time: parsedTime ? parsedTime.formatted : null,
+    timestampMs: parsedTime ? parsedTime.timestampMs : null,
+    type: normalizeMetaText(row.type),
+    warnings
+  };
+}
+
+function uniqueTexts(values) {
+  return [...new Set(values
+    .map((value) => String(value || "").trim())
+    .filter(Boolean))];
+}
+
+function buildBranchAggregateMeta(parentName, branches, parentMeta = null) {
+  const builtBranches = branches.filter((branch) => Number.isFinite(branch.timestampMs));
+  const latestBranch = builtBranches.reduce((latest, branch) => {
+    if (!latest || branch.timestampMs > latest.timestampMs) {
+      return branch;
+    }
+
+    return latest;
+  }, null);
+  const byteValues = branches
+    .map((branch) => branch.bytesValue)
+    .filter((value) => Number.isFinite(value));
+  const secondValues = branches
+    .map((branch) => branch.secondsValue)
+    .filter((value) => Number.isFinite(value));
+  const bytesValue = byteValues.length
+    ? byteValues.reduce((total, value) => total + value, 0)
+    : null;
+  const secondsValue = secondValues.length
+    ? secondValues.reduce((total, value) => total + value, 0)
+    : null;
+  const warnings = uniqueTexts(branches.map((branch) => branch.warnings)).join("\n") || null;
+  const errors = uniqueTexts(branches.map((branch) => branch.error)).join("\n") || null;
+  const format = parentMeta && parentMeta.format ? parentMeta.format : (branches.find((branch) => branch.format)?.format || null);
+  const timestampMs = latestBranch ? latestBranch.timestampMs : (parentMeta ? parentMeta.timestampMs : null);
+
+  return {
+    bytes: bytesValue === null ? (parentMeta ? parentMeta.bytes : null) : String(bytesValue),
+    bytesValue,
+    branchCount: branches.length,
+    builtBranchCount: builtBranches.length,
+    dynamicBranchAggregate: true,
+    error: errors,
+    format,
+    hasError: Boolean(errors),
+    hasWarnings: Boolean(warnings),
+    parent: null,
+    raw: {
+      branchCount: String(branches.length),
+      builtBranchCount: String(builtBranches.length),
+      name: parentName,
+      type: parentMeta && parentMeta.type ? parentMeta.type : "stem"
+    },
+    runtime: secondsValue === null ? (parentMeta ? parentMeta.runtime : null) : formatDurationSeconds(secondsValue),
+    secondsValue,
+    size: bytesValue === null ? (parentMeta ? parentMeta.size : null) : formatBytes(bytesValue, null),
+    sizeLabel: getMetaSizeLabel(format),
+    time: timestampMs === null ? null : formatTimestampInTimeZone(timestampMs, "UTC"),
+    timestampMs,
+    type: parentMeta && parentMeta.type ? parentMeta.type : "stem",
+    warnings
+  };
+}
+
+function applyBranchAggregates(metaByTarget) {
+  const branchesByParent = new Map();
+
+  for (const meta of metaByTarget.values()) {
+    if (!meta || meta.type !== "branch" || !meta.parent) {
+      continue;
+    }
+
+    if (!branchesByParent.has(meta.parent)) {
+      branchesByParent.set(meta.parent, []);
+    }
+    branchesByParent.get(meta.parent).push(meta);
+  }
+
+  for (const [parentName, branches] of branchesByParent.entries()) {
+    metaByTarget.set(parentName, buildBranchAggregateMeta(parentName, branches, metaByTarget.get(parentName) || null));
+  }
+}
+
 function parseTargetsMeta(text) {
   const lines = text.split(/\r?\n/).filter((line) => line.length);
   if (!lines.length) {
@@ -221,28 +330,10 @@ function parseTargetsMeta(text) {
       continue;
     }
 
-    const parsedTime = parseMetaTime(row.time);
-    const warnings = normalizeMetaText(row.warnings);
-    const error = normalizeMetaText(row.error);
-    const format = normalizeMetaText(row.format);
-    metaByTarget.set(row.name, {
-      bytes: normalizeMetaText(row.bytes),
-      bytesValue: Number.isFinite(Number(row.bytes)) ? Number(row.bytes) : null,
-      error,
-      format,
-      hasError: Boolean(error),
-      hasWarnings: Boolean(warnings),
-      raw: row,
-      runtime: formatMetaDuration(row.seconds),
-      secondsValue: Number.isFinite(Number(row.seconds)) ? Number(row.seconds) : null,
-      size: formatBytes(row.bytes, normalizeMetaText(row.size)),
-      sizeLabel: getMetaSizeLabel(format),
-      time: parsedTime ? parsedTime.formatted : null,
-      timestampMs: parsedTime ? parsedTime.timestampMs : null,
-      warnings
-    });
+    metaByTarget.set(row.name, createMetaFromRow(row));
   }
 
+  applyBranchAggregates(metaByTarget);
   return metaByTarget;
 }
 

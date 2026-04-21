@@ -237,6 +237,24 @@ test("collectTargetHeatmapAssignments() marks targets with no build timestamp as
   assert.equal(assignments.buckets.size, 0);
 });
 
+test("collectTargetHeatmapAssignments() uses dynamic branch metadata for parent pattern targets", () => {
+  const { collectTargetHeatmapAssignments } = loadTargetHeatmapWithMockVscode();
+  const { index, root } = buildIndex("meta_dynamic_branches");
+  const assignments = collectTargetHeatmapAssignments(index, path.join(root, "_targets.R"), {
+    enabled: true,
+    metric: "size",
+    minRuntimeSeconds: 1,
+    minSizeBytes: 100,
+    notBuiltColor: "purple",
+    palette: ["c1", "c2"],
+    runtimeBreaksSeconds: [5, 30, 120],
+    sizeBreaksBytes: [300]
+  });
+
+  assert.ok(!assignments.notBuilt.some((assignment) => assignment.targetName === "mapped"));
+  assert.deepEqual((assignments.buckets.get(1) || []).map((assignment) => assignment.targetName), ["mapped"]);
+});
+
 test("collectTargetHeatmapAssignments() separates warning-only and error targets for status underlines", () => {
   const { collectTargetHeatmapAssignments } = loadTargetHeatmapWithMockVscode();
   const { index, root } = buildIndex("meta_status_decorations");
