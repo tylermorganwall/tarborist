@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.13.1] - 2026-04-21
+
+### Changed
+
+- Bump extension metadata to retrigger release automation.
+
 ## [0.13.0] - 2026-04-20
 
 ### Added
