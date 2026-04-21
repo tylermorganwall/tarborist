@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.13.0] - 2026-04-20
+
+### Added
+
+- Configurable target metadata timestamp timezone support through `tarborist.timeZone`, defaulting to the extension host's detected system timezone when unset.
+
+### Fixed
+
+- Run-in-place cursor movement inside braced target command regions now advances to the next expression or preserved indentation point instead of jumping to the end of the target when more code remains.
+- Dynamic branch metadata is now aggregated onto parent pattern targets, so heatmap and status coloring reflect built branch outputs instead of treating the parent as missing metadata.
+
 ## [0.12.0] - 2026-04-17
 
 ### Added
