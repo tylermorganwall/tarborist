@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.13.2] - 2026-04-22
+
+### Fixed
+
+- Avoid eager metadata timestamp formatting during index refreshes, restoring fast UTC formatting and lazy cached timezone formatting for hover display.
+
 ## [0.13.1] - 2026-04-21
 
 ### Changed

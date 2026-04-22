@@ -190,7 +190,7 @@ function getTargetCueModes(index, targetNames) {
 }
 
 function isTargetNotBuilt(meta) {
-  return !meta || !meta.time;
+  return !meta || !Number.isFinite(meta.timestampMs);
 }
 
 function positionToOffset(text, position) {
@@ -269,12 +269,15 @@ function buildTargetMetaStamps(index) {
     }
 
     if (meta.raw) {
-      stamps.set(name, JSON.stringify(meta.raw));
+      stamps.set(name, JSON.stringify({
+        raw: meta.raw,
+        timestampMs: Number.isFinite(meta.timestampMs) ? meta.timestampMs : ""
+      }));
       continue;
     }
 
     stamps.set(name, JSON.stringify([
-      meta.time || "",
+      Number.isFinite(meta.timestampMs) ? meta.timestampMs : "",
       meta.bytes || "",
       meta.runtime || "",
       meta.warnings || "",

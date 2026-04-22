@@ -7,7 +7,7 @@ const vscode = require("vscode");
 const { findNodeAt, matchesCall, unpackArguments } = require("../parser/ast");
 const { parseText } = require("../parser/treeSitter");
 const { getTargetLocation } = require("../targetLocation");
-const { formatTimestampInTimeZone, resolveDisplayTimeZone } = require("../index/targetsMeta");
+const { formatTimestampInTimeZone } = require("../index/targetsMeta");
 const { formatLocation, normalizeFile } = require("../util/paths");
 const { containsPosition } = require("../util/ranges");
 const { findGeneratorAtPosition, findTargetAtPosition } = require("./shared");
@@ -228,12 +228,16 @@ function buildMetaStatus(meta) {
   return "`clean`";
 }
 
+function hasMetaTimestamp(meta) {
+  return Boolean(meta && Number.isFinite(meta.timestampMs));
+}
+
 function formatMetaUpdated(meta) {
   if (!meta) {
     return null;
   }
 
-  if (!meta.time) {
+  if (!hasMetaTimestamp(meta)) {
     return "`not built yet`";
   }
 
@@ -254,11 +258,11 @@ function getConfiguredTimeZone() {
 }
 
 function formatMetaTime(meta) {
-  if (!meta || !Number.isFinite(meta.timestampMs)) {
+  if (!hasMetaTimestamp(meta)) {
     return meta && meta.time ? meta.time : "";
   }
 
-  return formatTimestampInTimeZone(meta.timestampMs, resolveDisplayTimeZone(getConfiguredTimeZone()));
+  return formatTimestampInTimeZone(meta.timestampMs, getConfiguredTimeZone());
 }
 
 function formatMetaAge(meta) {
@@ -275,7 +279,7 @@ function buildTargetListDescription(index, target, root, destination, options = 
   const location = formatLocation(root, destination.file, destination.range);
   const directPrefix = options.direct ? "<direct> " : "";
   const meta = index.targetsMeta && index.targetsMeta.get(target.name);
-  if (meta && !meta.time) {
+  if (meta && !hasMetaTimestamp(meta)) {
     return `${directPrefix}${location} (not built yet)`;
   }
 

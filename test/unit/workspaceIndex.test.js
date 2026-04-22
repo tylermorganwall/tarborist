@@ -3,10 +3,12 @@
 // Fixture-driven regression tests for the static workspace index.
 const assert = require("node:assert/strict");
 const fs = require("fs");
+const Module = require("module");
 const path = require("path");
 const test = require("node:test");
 
 const { buildStaticWorkspaceIndex } = require("../../src/index/pipelineResolver");
+const { formatTimestampInTimeZone } = require("../../src/index/targetsMeta");
 const { ensureParserReady, parseText } = require("../../src/parser/treeSitter");
 
 function buildIndex(fixtureName, options = {}) {
@@ -17,6 +19,101 @@ function buildIndex(fixtureName, options = {}) {
     readFile: (file) => fs.readFileSync(file, "utf8"),
     workspaceRoot: root
   });
+}
+
+function loadWorkspaceIndexWithMockVscode() {
+  let configurationHandler = null;
+  const disposable = { dispose() {} };
+  const watcher = {
+    onDidChange() {},
+    onDidCreate() {},
+    onDidDelete() {},
+    dispose() {}
+  };
+  const mockVscode = {
+    EventEmitter: class EventEmitter {
+      constructor() {
+        this.event = () => disposable;
+      }
+
+      fire() {}
+
+      dispose() {}
+    },
+    Uri: {
+      file(file) {
+        return { fsPath: file };
+      }
+    },
+    languages: {
+      createDiagnosticCollection() {
+        return {
+          delete() {},
+          dispose() {},
+          set() {}
+        };
+      }
+    },
+    window: {
+      showErrorMessage() {}
+    },
+    workspace: {
+      createFileSystemWatcher() {
+        return watcher;
+      },
+      getConfiguration() {
+        return {
+          get(_key, fallback) {
+            return fallback;
+          }
+        };
+      },
+      getWorkspaceFolder() {
+        return null;
+      },
+      onDidChangeConfiguration(handler) {
+        configurationHandler = handler;
+        return disposable;
+      },
+      onDidChangeWorkspaceFolders() {
+        return disposable;
+      },
+      onDidCloseTextDocument() {
+        return disposable;
+      },
+      onDidOpenTextDocument() {
+        return disposable;
+      },
+      onDidSaveTextDocument() {
+        return disposable;
+      },
+      textDocuments: [],
+      workspaceFolders: []
+    }
+  };
+
+  const modulePath = require.resolve("../../src/index/workspaceIndex");
+  delete require.cache[modulePath];
+
+  const originalLoad = Module._load;
+  Module._load = function patchedLoad(request, parent, isMain) {
+    if (request === "vscode") {
+      return mockVscode;
+    }
+
+    return originalLoad.call(this, request, parent, isMain);
+  };
+
+  try {
+    return {
+      ...require("../../src/index/workspaceIndex"),
+      getConfigurationHandler() {
+        return configurationHandler;
+      }
+    };
+  } finally {
+    Module._load = originalLoad;
+  }
 }
 
 test.before(async () => {
@@ -264,7 +361,8 @@ test("reads runtime metadata from _targets/meta/meta", () => {
   const meta = index.targetsMeta.get("x");
 
   assert.ok(meta);
-  assert.equal(meta.time, "2025-10-10 15:56:12.925 UTC");
+  assert.equal(meta.time, null);
+  assert.equal(meta.timestampMs, Date.parse("2025-10-10T15:56:12.925Z"));
   assert.equal(meta.runtime, "174 ms");
   assert.equal(meta.size, "4.42 KB (4521 B)");
   assert.equal(meta.hasWarnings, true);
@@ -281,7 +379,9 @@ test("aggregates dynamic branch metadata onto the parent pattern target", () => 
   assert.equal(meta.dynamicBranchAggregate, true);
   assert.equal(meta.branchCount, 2);
   assert.equal(meta.builtBranchCount, 2);
-  assert.equal(meta.time, "2025-10-10 16:48:00.000 UTC");
+  assert.equal(meta.time, null);
+  assert.equal(meta.timestampMs, Date.parse("2025-10-10T16:48:00.000Z"));
+  assert.equal(formatTimestampInTimeZone(meta.timestampMs, "UTC"), "2025-10-10 16:48:00.000 UTC");
   assert.equal(meta.runtime, "1.75 s");
   assert.equal(meta.size, "400 B");
   assert.equal(meta.hasWarnings, false);
@@ -412,6 +512,31 @@ test("indexes configured additional single-target factories", () => {
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "c" && ref.targetName === "a"));
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "c" && ref.targetName === "b"));
   assert.ok(index.refs.some((ref) => ref.enclosingTarget === "d" && ref.targetName === "c"));
+});
+
+test("workspace index refreshes when tarborist.timeZone changes", async () => {
+  const { WorkspaceIndexManager, getConfigurationHandler } = loadWorkspaceIndexWithMockVscode();
+  const manager = new WorkspaceIndexManager(null);
+  const context = {
+    subscriptions: {
+      push() {}
+    }
+  };
+  let refreshCount = 0;
+  manager.refreshAll = async () => {
+    refreshCount += 1;
+  };
+
+  await manager.activate(context);
+  assert.equal(refreshCount, 1);
+
+  getConfigurationHandler()({
+    affectsConfiguration(name) {
+      return name === "tarborist.timeZone";
+    }
+  });
+
+  assert.equal(refreshCount, 2);
 });
 
 test("scans tar_quarto() documents for tar_read()/tar_load() dependencies, including raw params access", () => {

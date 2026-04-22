@@ -5,7 +5,7 @@
   "description": "Static analysis for navigating and debugging complex R targets pipelines",
   "icon": "tarborist.png",
   "license": "GPL-3.0-or-later",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/tylermorganwall/tarborist.git"

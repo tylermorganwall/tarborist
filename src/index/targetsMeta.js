@@ -38,16 +38,30 @@ function splitMetaLine(line, columnCount) {
   return head;
 }
 
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
 function pad3(value) {
   return String(value).padStart(3, "0");
 }
 
+const VALID_TIME_ZONE_CACHE = new Map();
+const TIMESTAMP_FORMATTER_CACHE = new Map();
+let detectedDefaultTimeZone = null;
+
 function detectDefaultTimeZone() {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  } catch (_error) {
-    return "UTC";
+  if (detectedDefaultTimeZone) {
+    return detectedDefaultTimeZone;
   }
+
+  try {
+    detectedDefaultTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch (_error) {
+    detectedDefaultTimeZone = "UTC";
+  }
+
+  return detectedDefaultTimeZone;
 }
 
 function isValidTimeZone(timeZone) {
@@ -55,10 +69,20 @@ function isValidTimeZone(timeZone) {
     return false;
   }
 
+  if (timeZone === "UTC") {
+    return true;
+  }
+
+  if (VALID_TIME_ZONE_CACHE.has(timeZone)) {
+    return VALID_TIME_ZONE_CACHE.get(timeZone);
+  }
+
   try {
     new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date(0));
+    VALID_TIME_ZONE_CACHE.set(timeZone, true);
     return true;
   } catch (_error) {
+    VALID_TIME_ZONE_CACHE.set(timeZone, false);
     return false;
   }
 }
@@ -73,43 +97,67 @@ function resolveDisplayTimeZone(timeZone = "") {
   return isValidTimeZone(detected) ? detected : "UTC";
 }
 
+function formatTimestampUtc(timestampMs) {
+  const date = new Date(timestampMs);
+  return [
+    date.getUTCFullYear(),
+    "-",
+    pad2(date.getUTCMonth() + 1),
+    "-",
+    pad2(date.getUTCDate()),
+    " ",
+    pad2(date.getUTCHours()),
+    ":",
+    pad2(date.getUTCMinutes()),
+    ":",
+    pad2(date.getUTCSeconds()),
+    ".",
+    pad3(date.getUTCMilliseconds()),
+    " UTC"
+  ].join("");
+}
+
+function getTimestampFormatter(timeZone) {
+  if (!TIMESTAMP_FORMATTER_CACHE.has(timeZone)) {
+    TIMESTAMP_FORMATTER_CACHE.set(timeZone, new Intl.DateTimeFormat("en-CA", {
+      day: "2-digit",
+      hour: "2-digit",
+      hourCycle: "h23",
+      hour12: false,
+      minute: "2-digit",
+      month: "2-digit",
+      second: "2-digit",
+      timeZone,
+      timeZoneName: "short",
+      year: "numeric"
+    }));
+  }
+
+  return TIMESTAMP_FORMATTER_CACHE.get(timeZone);
+}
+
+function formatTimestampWithFormatter(timestampMs, formatter) {
+  const date = new Date(timestampMs);
+  const formatted = formatter.format(date).replace(",", "");
+  const zoneOffset = formatted.lastIndexOf(" ");
+  if (zoneOffset === -1) {
+    return `${formatted}.${pad3(date.getUTCMilliseconds())}`;
+  }
+
+  return `${formatted.slice(0, zoneOffset)}.${pad3(date.getUTCMilliseconds())}${formatted.slice(zoneOffset)}`;
+}
+
 function formatTimestampInTimeZone(timestampMs, timeZone = "") {
   if (!Number.isFinite(timestampMs)) {
     return null;
   }
 
   const resolvedTimeZone = resolveDisplayTimeZone(timeZone);
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    day: "2-digit",
-    hour: "2-digit",
-    hourCycle: "h23",
-    hour12: false,
-    minute: "2-digit",
-    month: "2-digit",
-    second: "2-digit",
-    timeZone: resolvedTimeZone,
-    timeZoneName: "short",
-    year: "numeric"
-  });
-  const parts = Object.fromEntries(formatter.formatToParts(new Date(timestampMs)).map((part) => [part.type, part.value]));
+  if (resolvedTimeZone === "UTC") {
+    return formatTimestampUtc(timestampMs);
+  }
 
-  return [
-    parts.year,
-    "-",
-    parts.month,
-    "-",
-    parts.day,
-    " ",
-    parts.hour,
-    ":",
-    parts.minute,
-    ":",
-    parts.second,
-    ".",
-    pad3(timestampMs % 1000),
-    " ",
-    parts.timeZoneName || resolvedTimeZone
-  ].join("");
+  return formatTimestampWithFormatter(timestampMs, getTimestampFormatter(resolvedTimeZone));
 }
 
 function parseMetaTime(raw) {
@@ -126,7 +174,6 @@ function parseMetaTime(raw) {
   const totalMilliseconds = Math.round(days * 24 * 60 * 60 * 1000);
 
   return {
-    formatted: formatTimestampInTimeZone(totalMilliseconds, "UTC"),
     timestampMs: totalMilliseconds
   };
 }
@@ -223,7 +270,7 @@ function createMetaFromRow(row) {
     secondsValue: Number.isFinite(Number(row.seconds)) ? Number(row.seconds) : null,
     size: formatBytes(row.bytes, normalizeMetaText(row.size)),
     sizeLabel: getMetaSizeLabel(format),
-    time: parsedTime ? parsedTime.formatted : null,
+    time: null,
     timestampMs: parsedTime ? parsedTime.timestampMs : null,
     type: normalizeMetaText(row.type),
     warnings
@@ -283,7 +330,7 @@ function buildBranchAggregateMeta(parentName, branches, parentMeta = null) {
     secondsValue,
     size: bytesValue === null ? (parentMeta ? parentMeta.size : null) : formatBytes(bytesValue, null),
     sizeLabel: getMetaSizeLabel(format),
-    time: timestampMs === null ? null : formatTimestampInTimeZone(timestampMs, "UTC"),
+    time: null,
     timestampMs,
     type: parentMeta && parentMeta.type ? parentMeta.type : "stem",
     warnings

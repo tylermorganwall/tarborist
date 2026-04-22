@@ -88,12 +88,14 @@ class WorkspaceIndexManager {
       void this.refreshAll();
     }));
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
-      if (!event.affectsConfiguration("tarborist.additionalSingleTargetFactories")) {
+      const affectsTargetFactories = event.affectsConfiguration("tarborist.additionalSingleTargetFactories");
+      const affectsTimeZone = event.affectsConfiguration("tarborist.timeZone");
+      if (!affectsTargetFactories && !affectsTimeZone) {
         return;
       }
 
       if (this.outputChannel) {
-        this.outputChannel.appendLine("Updated tarborist.additionalSingleTargetFactories; refreshing pipeline indexes.");
+        this.outputChannel.appendLine("Updated tarborist configuration; refreshing pipeline indexes.");
       }
 
       void this.refreshAll();
