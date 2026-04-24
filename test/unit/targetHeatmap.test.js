@@ -702,6 +702,7 @@ test("TargetHeatmapController can render invalidation icons for changed and down
     }
   });
 
+  controller.reconcileInvalidationState(workspace.root, initial.index);
   await controller.updateEditor(editor, initial.index);
   calls.length = 0;
   currentText = changedText;
@@ -721,11 +722,118 @@ test("TargetHeatmapController can render invalidation icons for changed and down
   assert.ok(changedDecorationType);
   assert.ok(downstreamDecorationType);
 
-  const changedCall = calls.find((call) => call.decorationType === changedDecorationType);
-  const downstreamCall = calls.find((call) => call.decorationType === downstreamDecorationType);
+  let changedCall = calls.find((call) => call.decorationType === changedDecorationType);
+  let downstreamCall = calls.find((call) => call.decorationType === downstreamDecorationType);
+
+  assert.equal(changedCall.ranges.length, 0);
+  assert.equal(downstreamCall.ranges.length, 0);
+
+  controller.reconcileInvalidationState(workspace.root, changed.index);
+  calls.length = 0;
+  await controller.updateEditor(editor, changed.index);
+
+  changedCall = calls.find((call) => call.decorationType === changedDecorationType);
+  downstreamCall = calls.find((call) => call.decorationType === downstreamDecorationType);
 
   assert.equal(changedCall.ranges.length, 2);
   assert.equal(downstreamCall.ranges.length, 1);
   assert.equal(changedCall.ranges[0].hoverMessage, undefined);
   assert.equal(downstreamCall.ranges[0].hoverMessage, undefined);
+});
+
+test("TargetHeatmapController waits for refreshed ranges before showing invalidation icons after newline edits", async () => {
+  const {
+    TargetHeatmapController,
+    createdDecorationTypes
+  } = loadTargetHeatmapWithMockVscode({
+    "targetHeatmap.enabled": false,
+    "targetInvalidationDecorations.color": "#0055ff",
+    "targetInvalidationDecorations.enabled": true,
+    "targetStatusDecorations.enabled": false
+  });
+  const initialText = [
+    "list(",
+    "  tar_target(a, 1),",
+    "  tar_target(b, a + 1)",
+    ")",
+    ""
+  ].join("\n");
+  const changedText = [
+    "list(",
+    "  tar_target(a, 2),",
+    "  tar_target(b, a + 1)",
+    ")",
+    ""
+  ].join("\n");
+  const shiftedChangedText = `\n${changedText}`;
+  const workspace = buildIndexFromText(initialText);
+  const initial = buildIndexFromText(initialText, null, workspace.root);
+  const changed = buildIndexFromText(changedText, null, workspace.root);
+  const shiftedChanged = buildIndexFromText(shiftedChangedText, null, workspace.root);
+  let currentText = initialText;
+  const calls = [];
+  const editor = {
+    document: {
+      languageId: "r",
+      uri: {
+        fsPath: path.join(workspace.root, "_targets.R"),
+        scheme: "file"
+      }
+    },
+    setDecorations(decorationType, ranges) {
+      calls.push({ decorationType, ranges });
+    }
+  };
+  const controller = new TargetHeatmapController({
+    getPipelineRootForUri() {
+      return workspace.root;
+    },
+    async getIndexForUri() {
+      return changed.index;
+    },
+    readFile() {
+      return currentText;
+    }
+  });
+
+  controller.reconcileInvalidationState(workspace.root, initial.index);
+  currentText = changedText;
+  controller.reconcileInvalidationState(workspace.root, changed.index);
+  await controller.updateEditor(editor, changed.index);
+
+  const changedDecorationType = createdDecorationTypes.find((decorationType) => (
+    decorationType.options.before
+    && decorationType.options.before.contentText === "\u25CF"
+    && decorationType.options.before.color === "#0055ff"
+  ));
+  const downstreamDecorationType = createdDecorationTypes.find((decorationType) => (
+    decorationType.options.before
+    && decorationType.options.before.contentText === "\u25D0"
+    && decorationType.options.before.color === "#0055ff"
+  ));
+
+  let changedCall = calls.find((call) => call.decorationType === changedDecorationType);
+  let downstreamCall = calls.find((call) => call.decorationType === downstreamDecorationType);
+  assert.equal(changedCall.ranges.length, 2);
+  assert.equal(downstreamCall.ranges.length, 1);
+
+  currentText = shiftedChangedText;
+  calls.length = 0;
+  await controller.updateEditor(editor, changed.index);
+
+  changedCall = calls.find((call) => call.decorationType === changedDecorationType);
+  downstreamCall = calls.find((call) => call.decorationType === downstreamDecorationType);
+  assert.equal(changedCall.ranges.length, 0);
+  assert.equal(downstreamCall.ranges.length, 0);
+
+  controller.reconcileInvalidationState(workspace.root, shiftedChanged.index);
+  calls.length = 0;
+  await controller.updateEditor(editor, shiftedChanged.index);
+
+  changedCall = calls.find((call) => call.decorationType === changedDecorationType);
+  downstreamCall = calls.find((call) => call.decorationType === downstreamDecorationType);
+  assert.equal(changedCall.ranges.length, 2);
+  assert.equal(downstreamCall.ranges.length, 1);
+  assert.equal(changedCall.ranges[0].range.start.line, 2);
+  assert.equal(downstreamCall.ranges[0].range.start.line, 3);
 });

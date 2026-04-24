@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.13.3] - 2026-04-24
+
+### Fixed
+
+- Delay target invalidation decorations until refreshed index ranges match the current file contents, preventing stale changed/downstream icons after edits that shift target positions.
+
 ## [0.13.2] - 2026-04-22
 
 ### Fixed

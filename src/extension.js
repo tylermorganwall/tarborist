@@ -616,9 +616,13 @@ function registerOrganizePipelineCommand(context, indexManager, targetHeatmapCon
 async function activate(context) {
   const outputChannel = vscode.window.createOutputChannel("tarborist");
   const indexManager = new WorkspaceIndexManager(outputChannel);
-  await indexManager.activate(context);
   const targetHeatmapController = new TargetHeatmapController(indexManager);
   context.subscriptions.push(targetHeatmapController);
+  context.subscriptions.push(indexManager.onDidRefresh(({ index, root }) => {
+    void targetHeatmapController.refreshEditorsForRoot(root, index);
+  }));
+
+  await indexManager.activate(context);
   registerTarLoadHereCommand(context, indexManager);
   registerExecuteInPlaceCommand(context, indexManager);
   registerOrganizePipelineCommand(context, indexManager, targetHeatmapController);
@@ -765,10 +769,6 @@ async function activate(context) {
       void updateExecuteInPlaceContext(indexManager);
     }
   }));
-  context.subscriptions.push(indexManager.onDidRefresh(({ index, root }) => {
-    void targetHeatmapController.refreshEditorsForRoot(root, index);
-  }));
-
   await updateTarLoadHereContext(indexManager);
   await updateExecuteInPlaceContext(indexManager);
   await targetHeatmapController.refreshVisibleEditors();

@@ -1587,6 +1587,7 @@ function executeFile(file, state) {
       imports: [],
       importLinks: [],
       lastValue: makeUnknown(normalizedFile, zeroRange(), `Static pipeline analysis is partial: recursive import involving '${path.basename(normalizedFile)}'`, true),
+      text: "",
       tree: null
     };
     if (!existing) {
@@ -1606,9 +1607,11 @@ function executeFile(file, state) {
     imports: [],
     importLinks: [],
     lastValue: makeUnknown(normalizedFile, zeroRange(), "Static pipeline analysis is partial: file did not evaluate to a pipeline object"),
+    text: analysis.text,
     tree: analysis.tree
   };
 
+  record.text = analysis.text;
   record.tree = analysis.tree;
   state.files.set(normalizedFile, record);
   state.inProgress.add(normalizedFile);

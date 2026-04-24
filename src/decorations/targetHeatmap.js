@@ -159,6 +159,28 @@ function getHeatmapRefs(index) {
   return index.completionRefs || index.refs || [];
 }
 
+function getIndexedFileText(index, file) {
+  if (!index || !index.files || !file) {
+    return null;
+  }
+
+  const record = index.files.get(normalizeFile(file));
+  return record && typeof record.text === "string" ? record.text : null;
+}
+
+function isIndexedFileCurrent(index, file, readFile) {
+  const indexedText = getIndexedFileText(index, file);
+  if (indexedText === null || typeof readFile !== "function") {
+    return true;
+  }
+
+  try {
+    return readFile(normalizeFile(file)) === indexedText;
+  } catch (_error) {
+    return true;
+  }
+}
+
 function getTargetCueMode(target) {
   const cueText = target && target.options ? target.options.cue : null;
   if (!cueText) {
@@ -234,7 +256,8 @@ function buildTargetCodeHashes(index, readFile) {
   const readSource = (file) => {
     const normalized = normalizeFile(file);
     if (!textCache.has(normalized)) {
-      textCache.set(normalized, readFile(normalized));
+      const indexedText = getIndexedFileText(index, normalized);
+      textCache.set(normalized, indexedText === null ? readFile(normalized) : indexedText);
     }
 
     return textCache.get(normalized);
@@ -298,6 +321,13 @@ function normalizeInvalidationState(previousState = null) {
     metaStamps: new Map(state.metaStamps || []),
     nextRevision: Number.isFinite(state.nextRevision) && state.nextRevision > 0 ? state.nextRevision : 1,
     observedHashes: new Map(state.observedHashes || [])
+  };
+}
+
+function emptyInvalidationState() {
+  return {
+    changedTargets: new Set(),
+    downstreamTargets: new Set()
   };
 }
 
@@ -810,12 +840,17 @@ class TargetHeatmapController {
     }));
   }
 
+  getInvalidationState(root) {
+    if (!root) {
+      return emptyInvalidationState();
+    }
+
+    return this.invalidationStates.get(normalizeFile(root)) || emptyInvalidationState();
+  }
+
   reconcileInvalidationState(root, index) {
     if (!root || !index || !this.indexManager || typeof this.indexManager.readFile !== "function") {
-      return {
-        changedTargets: new Set(),
-        downstreamTargets: new Set()
-      };
+      return emptyInvalidationState();
     }
 
     const normalizedRoot = normalizeFile(root);
@@ -828,7 +863,7 @@ class TargetHeatmapController {
     return nextState;
   }
 
-  async updateEditor(editor, indexOverride = null) {
+  async updateEditor(editor, indexOverride = null, refreshOptions = {}) {
     if (!editor || !editor.document || editor.document.uri.scheme !== "file" || editor.document.languageId !== "r") {
       return;
     }
@@ -851,8 +886,14 @@ class TargetHeatmapController {
     const root = this.indexManager.getPipelineRootForUri
       ? this.indexManager.getPipelineRootForUri(editor.document.uri)
       : null;
-    const invalidationState = invalidationOptions.enabled
-      ? this.reconcileInvalidationState(root, index)
+    const readCurrentFile = this.indexManager && typeof this.indexManager.readFile === "function"
+      ? (file) => this.indexManager.readFile(file)
+      : null;
+    const indexedFileCurrent = isIndexedFileCurrent(index, editor.document.uri.fsPath, readCurrentFile);
+    const invalidationState = invalidationOptions.enabled && indexedFileCurrent
+      ? (refreshOptions.refreshInvalidationState
+        ? this.reconcileInvalidationState(root, index)
+        : this.getInvalidationState(root))
       : null;
 
     this.ensureDecorationTypes(options, statusOptions, invalidationOptions);
