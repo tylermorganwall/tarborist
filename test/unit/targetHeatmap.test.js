@@ -413,6 +413,120 @@ test("reconcileTargetInvalidationState() keeps downstream targets invalidated un
   assert.deepEqual([...state.downstreamTargets], []);
 });
 
+test("reconcileTargetInvalidationState() clears downstream markers when upstream output is unchanged", () => {
+  const {
+    reconcileTargetInvalidationState
+  } = loadTargetHeatmapWithMockVscode();
+  const initialText = [
+    "list(",
+    "  tar_target(a, 1),",
+    "  tar_target(b, a + 1)",
+    ")",
+    ""
+  ].join("\n");
+  const changedText = [
+    "list(",
+    "  tar_target(a, 1 + 0),",
+    "  tar_target(b, a + 1)",
+    ")",
+    ""
+  ].join("\n");
+  const metaV1 = [
+    "name|type|data|command|depend|seed|path|time|size|bytes|format|repository|iteration|parent|children|seconds|warnings|error",
+    "a|stem|data-a|||||t1s|s1b|1|rds|local|vector|||0.1||",
+    "b|stem|data-b|||||t1s|s1b|1|rds|local|vector|||0.1||"
+  ].join("\n");
+  const metaV2 = [
+    "name|type|data|command|depend|seed|path|time|size|bytes|format|repository|iteration|parent|children|seconds|warnings|error",
+    "a|stem|data-a|||||t2s|s1b|1|rds|local|vector|||0.1||",
+    "b|stem|data-b|||||t1s|s1b|1|rds|local|vector|||0.1||"
+  ].join("\n");
+  const workspace = buildIndexFromText(initialText, metaV1);
+  const initial = buildIndexFromText(initialText, metaV1, workspace.root);
+  const changed = buildIndexFromText(changedText, metaV1, workspace.root);
+  const upstreamBuilt = buildIndexFromText(changedText, metaV2, workspace.root);
+
+  let state = reconcileTargetInvalidationState(
+    initial.index,
+    (file) => initial.readFile(file),
+    null
+  );
+  state = reconcileTargetInvalidationState(
+    changed.index,
+    (file) => changed.readFile(file),
+    state
+  );
+  assert.deepEqual([...state.changedTargets], ["a"]);
+  assert.deepEqual([...state.downstreamTargets], ["b"]);
+
+  state = reconcileTargetInvalidationState(
+    upstreamBuilt.index,
+    (file) => upstreamBuilt.readFile(file),
+    state
+  );
+  assert.deepEqual([...state.changedTargets], []);
+  assert.deepEqual([...state.downstreamTargets], []);
+});
+
+test("reconcileTargetInvalidationState() stops propagation when rebuilt intermediates are unchanged", () => {
+  const {
+    reconcileTargetInvalidationState
+  } = loadTargetHeatmapWithMockVscode();
+  const initialText = [
+    "list(",
+    "  tar_target(a, 1),",
+    "  tar_target(b, a + 1),",
+    "  tar_target(c, b + 1)",
+    ")",
+    ""
+  ].join("\n");
+  const changedText = [
+    "list(",
+    "  tar_target(a, 2),",
+    "  tar_target(b, a + 1),",
+    "  tar_target(c, b + 1)",
+    ")",
+    ""
+  ].join("\n");
+  const metaV1 = [
+    "name|type|data|command|depend|seed|path|time|size|bytes|format|repository|iteration|parent|children|seconds|warnings|error",
+    "a|stem|data-a-1|||||t1s|s1b|1|rds|local|vector|||0.1||",
+    "b|stem|data-b|||||t1s|s1b|1|rds|local|vector|||0.1||",
+    "c|stem|data-c|||||t1s|s1b|1|rds|local|vector|||0.1||"
+  ].join("\n");
+  const metaV2 = [
+    "name|type|data|command|depend|seed|path|time|size|bytes|format|repository|iteration|parent|children|seconds|warnings|error",
+    "a|stem|data-a-2|||||t2s|s1b|1|rds|local|vector|||0.1||",
+    "b|stem|data-b|||||t2s|s1b|1|rds|local|vector|||0.1||",
+    "c|stem|data-c|||||t1s|s1b|1|rds|local|vector|||0.1||"
+  ].join("\n");
+  const workspace = buildIndexFromText(initialText, metaV1);
+  const initial = buildIndexFromText(initialText, metaV1, workspace.root);
+  const changed = buildIndexFromText(changedText, metaV1, workspace.root);
+  const rebuilt = buildIndexFromText(changedText, metaV2, workspace.root);
+
+  let state = reconcileTargetInvalidationState(
+    initial.index,
+    (file) => initial.readFile(file),
+    null
+  );
+  state = reconcileTargetInvalidationState(
+    changed.index,
+    (file) => changed.readFile(file),
+    state
+  );
+  assert.deepEqual([...state.changedTargets], ["a"]);
+  assert.deepEqual([...state.downstreamTargets], ["b", "c"]);
+
+  state = reconcileTargetInvalidationState(
+    rebuilt.index,
+    (file) => rebuilt.readFile(file),
+    state
+  );
+  assert.deepEqual([...state.changedTargets], []);
+  assert.deepEqual([...state.downstreamTargets], []);
+});
+
 test("reconcileTargetInvalidationState() does not propagate through targets with cue = tar_cue(\"never\")", () => {
   const {
     reconcileTargetInvalidationState

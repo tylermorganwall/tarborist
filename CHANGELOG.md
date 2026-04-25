@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.13.4] - 2026-04-25
+
+### Fixed
+
+- Clear downstream target invalidation markers after `tar_make()` when rebuilt upstream targets produce unchanged outputs, including chained downstream targets whose rebuilt intermediates did not change.
+
 ## [0.13.3] - 2026-04-24
 
 ### Fixed

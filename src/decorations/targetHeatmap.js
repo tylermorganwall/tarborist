@@ -311,16 +311,34 @@ function buildTargetMetaStamps(index) {
   return stamps;
 }
 
+function buildTargetDataStamps(index) {
+  const stamps = new Map();
+  if (!index || !index.targetsMeta) {
+    return stamps;
+  }
+
+  for (const [name, meta] of index.targetsMeta.entries()) {
+    const data = meta && meta.raw && typeof meta.raw.data === "string"
+      ? meta.raw.data
+      : "";
+    stamps.set(name, data);
+  }
+
+  return stamps;
+}
+
 function normalizeInvalidationState(previousState = null) {
   const state = previousState || {};
   return {
     baselineHashes: new Map(state.baselineHashes || []),
     builtRevisions: new Map(state.builtRevisions || []),
     contentRevisions: new Map(state.contentRevisions || []),
+    dataStamps: new Map(state.dataStamps || []),
     initialized: Boolean(state.initialized),
     metaStamps: new Map(state.metaStamps || []),
     nextRevision: Number.isFinite(state.nextRevision) && state.nextRevision > 0 ? state.nextRevision : 1,
-    observedHashes: new Map(state.observedHashes || [])
+    observedHashes: new Map(state.observedHashes || []),
+    outputRevisions: new Map(state.outputRevisions || [])
   };
 }
 
@@ -331,7 +349,7 @@ function emptyInvalidationState() {
   };
 }
 
-function computeInvalidationRevisions(index, targetNames, contentRevisions) {
+function computeInvalidationRevisions(index, targetNames, sourceRevisions, state = null) {
   const graph = index && (index.completionGraph || index.graph);
   const downstream = graph && graph.upstreamToDownstream ? graph.upstreamToDownstream : new Map();
   const cueModes = getTargetCueModes(index, targetNames);
@@ -339,7 +357,7 @@ function computeInvalidationRevisions(index, targetNames, contentRevisions) {
   const queue = [];
 
   for (const name of targetNames) {
-    const revision = contentRevisions.get(name) || 0;
+    const revision = sourceRevisions.get(name) || 0;
     revisions.set(name, revision);
     if (revision > 0) {
       queue.push({ name, revision });
@@ -352,19 +370,50 @@ function computeInvalidationRevisions(index, targetNames, contentRevisions) {
       continue;
     }
 
+    const builtRevision = state ? (state.builtRevisions.get(name) || 0) : 0;
+    const outputRevision = state ? (state.outputRevisions.get(name) || 0) : revision;
+    const propagationRevision = state && builtRevision >= revision
+      ? outputRevision
+      : revision;
+    if (propagationRevision <= 0) {
+      continue;
+    }
+
     for (const child of downstream.get(name) || []) {
       if (cueModes.get(child) === "never") {
         continue;
       }
 
-      if (revision > (revisions.get(child) || 0)) {
-        revisions.set(child, revision);
-        queue.push({ name: child, revision });
+      if (propagationRevision > (revisions.get(child) || 0)) {
+        revisions.set(child, propagationRevision);
+        queue.push({ name: child, revision: propagationRevision });
       }
     }
   }
 
   return revisions;
+}
+
+function computePotentialSourceRevisions(targetNames, state, currentHashes) {
+  const revisions = new Map();
+
+  for (const name of targetNames) {
+    const currentHash = currentHashes.get(name) || null;
+    const builtHash = state.baselineHashes.get(name) || null;
+    const builtRevision = state.builtRevisions.get(name) || 0;
+    const contentRevision = state.contentRevisions.get(name) || 0;
+    const directlyInvalidated = !builtHash || currentHash !== builtHash || builtRevision < contentRevision;
+    const revision = directlyInvalidated
+      ? contentRevision
+      : (state.outputRevisions.get(name) || 0);
+    revisions.set(name, revision);
+  }
+
+  return revisions;
+}
+
+function targetBuildMayHaveChangedOutput(previousDataStamp, currentDataStamp) {
+  return !previousDataStamp || !currentDataStamp || previousDataStamp !== currentDataStamp;
 }
 
 function computeAlwaysAffectedTargets(index, targetNames) {
@@ -411,6 +460,7 @@ function reconcileTargetInvalidationState(index, readFile, previousState = null)
   const state = normalizeInvalidationState(previousState);
   const currentHashes = buildTargetCodeHashes(index, readFile);
   const currentMetaStamps = buildTargetMetaStamps(index);
+  const currentDataStamps = buildTargetDataStamps(index);
   const targetNames = new Set(currentHashes.keys());
   const alwaysAffectedTargets = computeAlwaysAffectedTargets(index, targetNames);
 
@@ -419,8 +469,10 @@ function reconcileTargetInvalidationState(index, readFile, previousState = null)
       state.baselineHashes.set(name, hash);
       state.builtRevisions.set(name, 0);
       state.contentRevisions.set(name, 0);
+      state.dataStamps.set(name, currentDataStamps.get(name) || "");
       state.metaStamps.set(name, currentMetaStamps.get(name) || "");
       state.observedHashes.set(name, hash);
+      state.outputRevisions.set(name, 0);
     }
 
     state.initialized = true;
@@ -436,20 +488,24 @@ function reconcileTargetInvalidationState(index, readFile, previousState = null)
       state.baselineHashes.delete(name);
       state.builtRevisions.delete(name);
       state.contentRevisions.delete(name);
+      state.dataStamps.delete(name);
       state.metaStamps.delete(name);
       state.observedHashes.delete(name);
+      state.outputRevisions.delete(name);
     }
   }
 
-  const pendingBuilds = new Set();
+  const pendingBuilds = new Map();
   for (const [name, currentHash] of currentHashes.entries()) {
     const currentStamp = currentMetaStamps.get(name) || "";
+    const currentDataStamp = currentDataStamps.get(name) || "";
 
     if (!state.observedHashes.has(name)) {
       const revision = state.nextRevision;
       state.nextRevision += 1;
       state.observedHashes.set(name, currentHash);
       state.contentRevisions.set(name, revision);
+      state.dataStamps.set(name, currentDataStamp);
       state.metaStamps.set(name, currentStamp);
       if (currentStamp) {
         state.baselineHashes.set(name, currentHash);
@@ -457,6 +513,7 @@ function reconcileTargetInvalidationState(index, readFile, previousState = null)
       } else {
         state.builtRevisions.set(name, 0);
       }
+      state.outputRevisions.set(name, 0);
       continue;
     }
 
@@ -475,18 +532,30 @@ function reconcileTargetInvalidationState(index, readFile, previousState = null)
 
     const previousStamp = state.metaStamps.get(name) || "";
     if (currentStamp && currentStamp !== previousStamp) {
+      const previousDataStamp = state.dataStamps.get(name) || "";
       state.baselineHashes.set(name, currentHash);
-      pendingBuilds.add(name);
+      pendingBuilds.set(name, {
+        currentDataStamp,
+        previousDataStamp
+      });
     }
 
+    state.dataStamps.set(name, currentDataStamp);
     state.metaStamps.set(name, currentStamp);
   }
 
-  const invalidationRevisions = computeInvalidationRevisions(index, targetNames, state.contentRevisions);
-  for (const name of pendingBuilds) {
-    state.builtRevisions.set(name, invalidationRevisions.get(name) || 0);
+  const preBuildSourceRevisions = computePotentialSourceRevisions(targetNames, state, currentHashes);
+  const preBuildInvalidationRevisions = computeInvalidationRevisions(index, targetNames, preBuildSourceRevisions, state);
+  for (const [name, build] of pendingBuilds.entries()) {
+    const builtRevision = preBuildInvalidationRevisions.get(name) || 0;
+    state.builtRevisions.set(name, builtRevision);
+    if (builtRevision > 0 && targetBuildMayHaveChangedOutput(build.previousDataStamp, build.currentDataStamp)) {
+      state.outputRevisions.set(name, builtRevision);
+    }
   }
 
+  const sourceRevisions = computePotentialSourceRevisions(targetNames, state, currentHashes);
+  const invalidationRevisions = computeInvalidationRevisions(index, targetNames, sourceRevisions, state);
   const changedTargets = new Set();
   const downstreamTargets = new Set(alwaysAffectedTargets.downstreamTargets);
   for (const [name, currentHash] of currentHashes.entries()) {
