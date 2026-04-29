@@ -5,7 +5,7 @@
   "description": "Static analysis for navigating and debugging complex R targets pipelines",
   "icon": "tarborist.png",
   "license": "GPL-3.0-or-later",
-  "version": "0.13.4",
+  "version": "0.14.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/tylermorganwall/tarborist.git"
@@ -50,16 +50,36 @@
         "tarborist.targetHeatmap.enabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Highlight target definition names with a subtle background color based on `_targets/meta/meta` runtime metadata."
+          "markdownDescription": "Highlight target definition names with a subtle background color based on target graph or `_targets/meta/meta` metadata."
         },
         "tarborist.targetHeatmap.metric": {
           "type": "string",
           "enum": [
+            "directDescendants",
             "size",
             "runtime"
           ],
-          "default": "size",
-          "markdownDescription": "Metric used for target heatmap highlighting: output `size` or build `runtime`."
+          "default": "directDescendants",
+          "markdownDescription": "Metric used for target heatmap highlighting: direct descendant count, output `size`, or build `runtime`."
+        },
+        "tarborist.targetHeatmap.minDirectDescendants": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "markdownDescription": "Minimum direct descendant target count before any heatmap color is applied."
+        },
+        "tarborist.targetHeatmap.directDescendantBreaks": {
+          "type": "array",
+          "default": [
+            2,
+            5,
+            10
+          ],
+          "items": {
+            "type": "number",
+            "minimum": 0
+          },
+          "markdownDescription": "Ascending direct descendant count breakpoints used to bucket heatmap intensity after `tarborist.targetHeatmap.minDirectDescendants`."
         },
         "tarborist.targetHeatmap.minSizeBytes": {
           "type": "number",

@@ -6,9 +6,12 @@ const vscode = require("vscode");
 const { normalizeFile } = require("../util/paths");
 const { toVsCodeRange } = require("../util/vscode");
 
+const TARGET_HEATMAP_METRICS = new Set(["directDescendants", "runtime", "size"]);
 const DEFAULT_TARGET_HEATMAP_OPTIONS = Object.freeze({
   enabled: false,
-  metric: "size",
+  directDescendantBreaks: [2, 5, 10],
+  metric: "directDescendants",
+  minDirectDescendants: 1,
   minRuntimeSeconds: 1,
   minSizeBytes: 1024,
   notBuiltColor: "rgba(156, 132, 255, 0.18)",
@@ -58,17 +61,33 @@ function normalizePalette(value, fallback) {
   return colors.length ? colors : fallback.slice();
 }
 
+function normalizeTargetHeatmapMetric(value) {
+  const metric = String(value || "").trim();
+  return TARGET_HEATMAP_METRICS.has(metric)
+    ? metric
+    : DEFAULT_TARGET_HEATMAP_OPTIONS.metric;
+}
+
 function getTargetHeatmapOptions(config = vscode.workspace.getConfiguration("tarborist")) {
   const enabled = Boolean(config.get("targetHeatmap.enabled", DEFAULT_TARGET_HEATMAP_OPTIONS.enabled));
-  const metric = config.get("targetHeatmap.metric", DEFAULT_TARGET_HEATMAP_OPTIONS.metric) === "runtime"
-    ? "runtime"
-    : "size";
+  const metric = normalizeTargetHeatmapMetric(config.get("targetHeatmap.metric", DEFAULT_TARGET_HEATMAP_OPTIONS.metric));
+  const minDirectDescendants = Number(config.get(
+    "targetHeatmap.minDirectDescendants",
+    DEFAULT_TARGET_HEATMAP_OPTIONS.minDirectDescendants
+  ));
   const minSizeBytes = Number(config.get("targetHeatmap.minSizeBytes", DEFAULT_TARGET_HEATMAP_OPTIONS.minSizeBytes));
   const minRuntimeSeconds = Number(config.get("targetHeatmap.minRuntimeSeconds", DEFAULT_TARGET_HEATMAP_OPTIONS.minRuntimeSeconds));
 
   return {
+    directDescendantBreaks: normalizeNumberArray(
+      config.get("targetHeatmap.directDescendantBreaks", DEFAULT_TARGET_HEATMAP_OPTIONS.directDescendantBreaks),
+      DEFAULT_TARGET_HEATMAP_OPTIONS.directDescendantBreaks
+    ),
     enabled,
     metric,
+    minDirectDescendants: Number.isFinite(minDirectDescendants) && minDirectDescendants >= 0
+      ? minDirectDescendants
+      : DEFAULT_TARGET_HEATMAP_OPTIONS.minDirectDescendants,
     minRuntimeSeconds: Number.isFinite(minRuntimeSeconds) && minRuntimeSeconds >= 0
       ? minRuntimeSeconds
       : DEFAULT_TARGET_HEATMAP_OPTIONS.minRuntimeSeconds,
@@ -115,16 +134,69 @@ function getTargetInvalidationDecorationOptions(config = vscode.workspace.getCon
   };
 }
 
-function getTargetHeatmapMetricValue(meta, metric) {
+function getHeatmapGraph(index) {
+  return index && (index.completionGraph || index.graph)
+    ? (index.completionGraph || index.graph)
+    : null;
+}
+
+function getTargetDirectDescendantCount(index, targetName) {
+  const graph = getHeatmapGraph(index);
+  if (!graph || !graph.upstreamToDownstream || !targetName) {
+    return null;
+  }
+
+  return (graph.upstreamToDownstream.get(targetName) || new Set()).size;
+}
+
+function getTargetHeatmapMetricValue(meta, metric, index = null, targetName = null) {
+  const normalizedMetric = normalizeTargetHeatmapMetric(metric);
+  if (normalizedMetric === "directDescendants") {
+    return getTargetDirectDescendantCount(index, targetName);
+  }
+
   if (!meta) {
     return null;
   }
 
-  return metric === "runtime" ? meta.secondsValue : meta.bytesValue;
+  return normalizedMetric === "runtime" ? meta.secondsValue : meta.bytesValue;
 }
 
 function isHeatmapExcludedTarget(meta) {
   return Boolean(meta && meta.format === "file");
+}
+
+function isMetadataHeatmapMetric(metric) {
+  return metric === "runtime" || metric === "size";
+}
+
+function getTargetHeatmapMinimum(options) {
+  const metric = normalizeTargetHeatmapMetric(options.metric);
+  let value;
+  let fallback;
+  if (metric === "directDescendants") {
+    value = Number(options.minDirectDescendants);
+    fallback = DEFAULT_TARGET_HEATMAP_OPTIONS.minDirectDescendants;
+  } else if (metric === "runtime") {
+    value = Number(options.minRuntimeSeconds);
+    fallback = DEFAULT_TARGET_HEATMAP_OPTIONS.minRuntimeSeconds;
+  } else {
+    value = Number(options.minSizeBytes);
+    fallback = DEFAULT_TARGET_HEATMAP_OPTIONS.minSizeBytes;
+  }
+
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function getTargetHeatmapBreaks(options) {
+  const metric = normalizeTargetHeatmapMetric(options.metric);
+  if (metric === "directDescendants") {
+    return normalizeNumberArray(options.directDescendantBreaks, DEFAULT_TARGET_HEATMAP_OPTIONS.directDescendantBreaks);
+  }
+
+  return metric === "runtime"
+    ? normalizeNumberArray(options.runtimeBreaksSeconds, DEFAULT_TARGET_HEATMAP_OPTIONS.runtimeBreaksSeconds)
+    : normalizeNumberArray(options.sizeBreaksBytes, DEFAULT_TARGET_HEATMAP_OPTIONS.sizeBreaksBytes);
 }
 
 function getTargetHeatmapBucket(metricValue, options) {
@@ -132,12 +204,12 @@ function getTargetHeatmapBucket(metricValue, options) {
     return null;
   }
 
-  const minimum = options.metric === "runtime" ? options.minRuntimeSeconds : options.minSizeBytes;
+  const minimum = getTargetHeatmapMinimum(options);
   if (!Number.isFinite(minimum) || metricValue < minimum) {
     return null;
   }
 
-  const breaks = options.metric === "runtime" ? options.runtimeBreaksSeconds : options.sizeBreaksBytes;
+  const breaks = getTargetHeatmapBreaks(options);
   let bucketIndex = 0;
   for (const breakpoint of breaks) {
     if (metricValue >= breakpoint) {
@@ -589,9 +661,12 @@ function reconcileTargetInvalidationState(index, readFile, previousState = null)
   };
 }
 
-function dedupeAssignments(assignments) {
+function dedupeAssignments(assignments, options = {}) {
   const seen = new Set();
   const deduped = [];
+  const {
+    collapseSharedRanges = false
+  } = options;
 
   for (const assignment of assignments) {
     const range = assignment && assignment.range;
@@ -600,12 +675,12 @@ function dedupeAssignments(assignments) {
     }
 
     const key = [
-      assignment.targetName || "",
-      assignment.hoverMessage || "",
       range.start.line,
       range.start.character,
       range.end.line,
-      range.end.character
+      range.end.character,
+      collapseSharedRanges ? "" : (assignment.targetName || ""),
+      collapseSharedRanges ? "" : (assignment.hoverMessage || "")
     ].join(":");
     if (seen.has(key)) {
       continue;
@@ -669,7 +744,11 @@ function collectTargetMarkerAssignments(index, filePath, targetNames, options = 
     }
   }
 
-  return dedupeAssignments(assignments);
+  // Static tar_map() branches can produce several generated refs on one
+  // template identifier; VS Code would otherwise render stacked icons there.
+  return dedupeAssignments(assignments, {
+    collapseSharedRanges: true
+  });
 }
 
 function collectTargetHeatmapAssignments(index, filePath, options, invalidationState = null, invalidationOptions = DEFAULT_TARGET_INVALIDATION_DECORATION_OPTIONS) {
@@ -706,19 +785,21 @@ function collectTargetHeatmapAssignments(index, filePath, options, invalidationS
       });
     }
 
-    if (isHeatmapExcludedTarget(meta)) {
-      continue;
+    if (isMetadataHeatmapMetric(options.metric)) {
+      if (isHeatmapExcludedTarget(meta)) {
+        continue;
+      }
+
+      if (isTargetNotBuilt(meta)) {
+        assignments.notBuilt.push({
+          range: target.nameRange,
+          targetName: target.name
+        });
+        continue;
+      }
     }
 
-    if (isTargetNotBuilt(meta)) {
-      assignments.notBuilt.push({
-        range: target.nameRange,
-        targetName: target.name
-      });
-      continue;
-    }
-
-    const metricValue = getTargetHeatmapMetricValue(meta, options.metric);
+    const metricValue = getTargetHeatmapMetricValue(meta, options.metric, index, target.name);
     const bucket = getTargetHeatmapBucket(metricValue, options);
     if (bucket === null) {
       continue;

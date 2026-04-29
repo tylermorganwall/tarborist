@@ -337,11 +337,41 @@ function buildBranchAggregateMeta(parentName, branches, parentMeta = null) {
   };
 }
 
-function applyBranchAggregates(metaByTarget) {
+function currentTargetsToMap(currentTargets) {
+  if (!currentTargets) {
+    return null;
+  }
+
+  if (currentTargets instanceof Map) {
+    return currentTargets;
+  }
+
+  if (Array.isArray(currentTargets)) {
+    return new Map(currentTargets
+      .filter((target) => target && target.name)
+      .map((target) => [target.name, target]));
+  }
+
+  return null;
+}
+
+function isPatternTarget(target) {
+  return Boolean(target && target.patternRange);
+}
+
+function hasBranchChildren(meta) {
+  return Boolean(meta && meta.raw && String(meta.raw.children || "").trim());
+}
+
+function collectBranchesByCurrentPatternParent(metaByTarget, currentTargetMap = null) {
   const branchesByParent = new Map();
 
   for (const meta of metaByTarget.values()) {
     if (!meta || meta.type !== "branch" || !meta.parent) {
+      continue;
+    }
+
+    if (currentTargetMap && !isPatternTarget(currentTargetMap.get(meta.parent))) {
       continue;
     }
 
@@ -351,12 +381,46 @@ function applyBranchAggregates(metaByTarget) {
     branchesByParent.get(meta.parent).push(meta);
   }
 
+  return branchesByParent;
+}
+
+function applyBranchAggregates(metaByTarget) {
+  const branchesByParent = collectBranchesByCurrentPatternParent(metaByTarget);
+
   for (const [parentName, branches] of branchesByParent.entries()) {
     metaByTarget.set(parentName, buildBranchAggregateMeta(parentName, branches, metaByTarget.get(parentName) || null));
   }
 }
 
-function parseTargetsMeta(text) {
+function filterMetaForCurrentTargets(metaByTarget, currentTargets) {
+  const currentTargetMap = currentTargetsToMap(currentTargets);
+  if (!currentTargetMap) {
+    applyBranchAggregates(metaByTarget);
+    return metaByTarget;
+  }
+
+  const filtered = new Map();
+  const branchesByParent = collectBranchesByCurrentPatternParent(metaByTarget, currentTargetMap);
+
+  for (const [name, target] of currentTargetMap.entries()) {
+    const meta = metaByTarget.get(name) || null;
+    if (isPatternTarget(target)) {
+      const branches = branchesByParent.get(name) || [];
+      if (branches.length) {
+        filtered.set(name, buildBranchAggregateMeta(name, branches, meta && meta.type !== "branch" ? meta : null));
+      }
+      continue;
+    }
+
+    if (meta && meta.type !== "branch" && !hasBranchChildren(meta)) {
+      filtered.set(name, meta);
+    }
+  }
+
+  return filtered;
+}
+
+function parseTargetsMeta(text, currentTargets = null) {
   const lines = text.split(/\r?\n/).filter((line) => line.length);
   if (!lines.length) {
     return new Map();
@@ -380,18 +444,17 @@ function parseTargetsMeta(text) {
     metaByTarget.set(row.name, createMetaFromRow(row));
   }
 
-  applyBranchAggregates(metaByTarget);
-  return metaByTarget;
+  return filterMetaForCurrentTargets(metaByTarget, currentTargets);
 }
 
-function readTargetsMeta(workspaceRoot, readFile) {
+function readTargetsMeta(workspaceRoot, readFile, currentTargets = null) {
   const metaFile = normalizeFile(path.join(workspaceRoot, "_targets", "meta", "meta"));
   if (!pathExists(metaFile)) {
     return new Map();
   }
 
   try {
-    return parseTargetsMeta(readFile(metaFile));
+    return parseTargetsMeta(readFile(metaFile), currentTargets);
   } catch (_error) {
     return new Map();
   }

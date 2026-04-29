@@ -12,13 +12,18 @@ function pickSmallest(matches) {
   return matches.sort((left, right) => rangeLength(left.range) - rangeLength(right.range))[0];
 }
 
-function findRefAtPosition(index, file, position) {
+function findRefAtPosition(index, file, position, options = {}) {
   const refs = index.completionRefs || index.refs || [];
-  const matches = refs.filter((ref) => !ref.synthetic && ref.file === file && containsPosition(ref.range, position));
+  const includeSynthetic = Boolean(options.includeSynthetic);
+  const matches = refs.filter((ref) => (
+    (includeSynthetic || !ref.synthetic) &&
+    ref.file === file &&
+    containsPosition(ref.range, position)
+  ));
   return pickSmallest(matches);
 }
 
-function findTargetAtPosition(index, file, position) {
+function findTargetAtPosition(index, file, position, options = {}) {
   const targets = index.completionTargets || index.targets || new Map();
   for (const target of targets.values()) {
     if (target.file === file && containsPosition(target.nameRange, position)) {
@@ -26,7 +31,7 @@ function findTargetAtPosition(index, file, position) {
     }
   }
 
-  const ref = findRefAtPosition(index, file, position);
+  const ref = findRefAtPosition(index, file, position, options);
   return ref ? targets.get(ref.targetName) || null : null;
 }
 

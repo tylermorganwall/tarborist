@@ -167,6 +167,138 @@ test("hovering a tar_combine() alias outside target code uses the target hover",
   assert.doesNotMatch(markdown, /Pipeline object `combined`/);
 });
 
+test("hover follows synthetic tar_map refs inside template commands", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("tar_map");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const lines = text.split("\n");
+  const document = createDocument(text, filePath);
+  const lineIndex = lines.findIndex((line) => line.includes("tar_read(fit_penguins)"));
+  const position = {
+    line: lineIndex,
+    character: lines[lineIndex].lastIndexOf("fit_penguins")
+  };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+  const markdown = hover.contents[0].value;
+
+  assert.match(markdown, /### \$\(symbol-array\) Generated target \[`fit_penguins_adelie`\]/);
+  assert.match(markdown, /\*\*Bindings\*\*/);
+});
+
+test("hover shows generated tar_map target info inside template command regions", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("tar_map");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const lines = text.split("\n");
+  const document = createDocument(text, filePath);
+  const lineIndex = lines.findIndex((line) => line.includes("fit_penguins, species"));
+  const position = {
+    line: lineIndex,
+    character: lines[lineIndex].indexOf("species")
+  };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+  const markdown = hover.contents[0].value;
+
+  assert.match(markdown, /### \$\(symbol-array\) Generated target \[`fit_penguins_adelie`\]/);
+  assert.match(markdown, /\*\*Bindings\*\*/);
+  assert.doesNotMatch(markdown, /Static `tar_map\(\)` expansion/);
+});
+
+test("hover shows compact upstream invalidation provenance", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("direct");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const lines = text.split("\n");
+  const document = createDocument(text, filePath);
+  const lineIndex = lines.findIndex((line) => line.includes("tar_target(b, a + 1)"));
+  const position = {
+    line: lineIndex,
+    character: lines[lineIndex].indexOf("b")
+  };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getPipelineRootForUri() {
+      return root;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  }, {
+    getInvalidationState() {
+      return {
+        changedTargets: new Set(["a"]),
+        downstreamTargets: new Set(["b"])
+      };
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+  const markdown = hover.contents[0].value;
+
+  assert.match(markdown, /\| \*\*Invalidation\*\* \| .*\[`a`\].* -> .*\[`b`\]/);
+});
+
+test("hover keeps invalidation provenance after changed upstream output rebuilds", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("direct");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const lines = text.split("\n");
+  const document = createDocument(text, filePath);
+  const lineIndex = lines.findIndex((line) => line.includes("tar_target(b, a + 1)"));
+  const position = {
+    line: lineIndex,
+    character: lines[lineIndex].indexOf("b")
+  };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getPipelineRootForUri() {
+      return root;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  }, {
+    getInvalidationState() {
+      return {
+        changedTargets: new Set(),
+        downstreamTargets: new Set(["b"]),
+        outputRevisions: new Map([["a", 3]])
+      };
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+  const markdown = hover.contents[0].value;
+
+  assert.match(markdown, /\| \*\*Invalidation\*\* \| .*\[`a`\].* -> .*\[`b`\]/);
+});
+
 test("hover shows runtime metadata from _targets/meta/meta", async () => {
   const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
   const { index, root } = buildIndex("meta_hover");

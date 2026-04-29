@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Target heatmaps can now use direct descendant counts from the static target graph.
+
+### Changed
+
+- The default target heatmap metric is now direct descendant count instead of target size.
+
 ## [0.13.4] - 2026-04-25
 
 ### Fixed

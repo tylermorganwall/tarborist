@@ -685,7 +685,7 @@ async function activate(context) {
 
   context.subscriptions.push(vscode.languages.registerHoverProvider(
     NAVIGATION_DOCUMENT_SELECTORS,
-    new TargetHoverProvider(indexManager)
+    new TargetHoverProvider(indexManager, targetHeatmapController)
   ));
 
   context.subscriptions.push(vscode.languages.registerDocumentLinkProvider(

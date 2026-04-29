@@ -10,10 +10,11 @@ const { getTargetLocation } = require("../targetLocation");
 const { formatTimestampInTimeZone } = require("../index/targetsMeta");
 const { formatLocation, normalizeFile } = require("../util/paths");
 const { containsPosition } = require("../util/ranges");
-const { findGeneratorAtPosition, findTargetAtPosition } = require("./shared");
+const { findCompletionRegion, findGeneratorAtPosition, findTargetAtPosition } = require("./shared");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_INLINE_DIRECT_DOWNSTREAM = 5;
+const MAX_INLINE_INVALIDATION_PATHS = 3;
 
 function createMarkdown() {
   // Hover links trigger extension commands, so mark only those commands as trusted.
@@ -339,6 +340,121 @@ function buildMetaRows(index, target) {
   return rows;
 }
 
+function findShortestTargetPath(graph, sourceName, targetName) {
+  if (!graph || !graph.upstreamToDownstream || sourceName === targetName) {
+    return sourceName === targetName ? [sourceName] : [];
+  }
+
+  const queue = [[sourceName]];
+  const seen = new Set([sourceName]);
+  while (queue.length) {
+    const path = queue.shift();
+    const current = path[path.length - 1];
+    for (const next of graph.upstreamToDownstream.get(current) || []) {
+      if (seen.has(next)) {
+        continue;
+      }
+
+      const nextPath = [...path, next];
+      if (next === targetName) {
+        return nextPath;
+      }
+
+      seen.add(next);
+      queue.push(nextPath);
+    }
+  }
+
+  return [];
+}
+
+function compactTargetPath(path) {
+  if (path.length <= 4) {
+    return path;
+  }
+
+  return [path[0], "...", path[path.length - 2], path[path.length - 1]];
+}
+
+function formatInvalidationPath(index, path) {
+  return compactTargetPath(path)
+    .map((targetName) => {
+      if (targetName === "...") {
+        return "`...`";
+      }
+
+      return commandLinkForTarget(getHoverTargets(index).get(targetName)) || `\`${targetName}\``;
+    })
+    .join(" -> ");
+}
+
+function getInvalidationSourceNames(index, targetName, invalidationState) {
+  if (!index || !targetName || !invalidationState) {
+    return [];
+  }
+
+  const graph = getHoverGraph(index);
+  const ancestors = graph && graph.ancestors ? (graph.ancestors.get(targetName) || new Set()) : new Set();
+  const targetBuiltRevision = invalidationState.builtRevisions && typeof invalidationState.builtRevisions.get === "function"
+    ? (invalidationState.builtRevisions.get(targetName) || 0)
+    : 0;
+  const sources = new Set();
+
+  for (const sourceName of invalidationState.changedTargets || []) {
+    if (sourceName === targetName || ancestors.has(sourceName)) {
+      sources.add(sourceName);
+    }
+  }
+
+  for (const [sourceName, revision] of invalidationState.outputRevisions || []) {
+    if (revision > targetBuiltRevision && (sourceName === targetName || ancestors.has(sourceName))) {
+      sources.add(sourceName);
+    }
+  }
+
+  return [...sources].sort();
+}
+
+function buildInvalidationSummary(index, target, invalidationState) {
+  if (!target || !invalidationState) {
+    return null;
+  }
+
+  if ((invalidationState.changedTargets || new Set()).has(target.name)) {
+    return "$(circle-filled) `changed here`";
+  }
+
+  if (!(invalidationState.downstreamTargets || new Set()).has(target.name)) {
+    return null;
+  }
+
+  const graph = getHoverGraph(index);
+  const sourceNames = getInvalidationSourceNames(index, target.name, invalidationState);
+  const paths = sourceNames
+    .map((sourceName) => findShortestTargetPath(graph, sourceName, target.name))
+    .filter((path) => path.length);
+
+  if (!paths.length) {
+    return "$(warning) `upstream changes`";
+  }
+
+  const visiblePaths = paths.slice(0, MAX_INLINE_INVALIDATION_PATHS);
+  const suffix = paths.length > visiblePaths.length
+    ? `; \`+${paths.length - visiblePaths.length} more\``
+    : "";
+  return `$(warning) ${visiblePaths.map((path) => formatInvalidationPath(index, path)).join("; ")}${suffix}`;
+}
+
+function buildInvalidationRows(index, target, invalidationState) {
+  const summary = buildInvalidationSummary(index, target, invalidationState);
+  return summary
+    ? [{
+      label: "Invalidation",
+      value: summary
+    }]
+    : [];
+}
+
 function appendMetaDetails(markdown, index, target) {
   const meta = index.targetsMeta && index.targetsMeta.get(target.name);
   if (!meta) {
@@ -416,7 +532,7 @@ function collectTargetsFromListCall(index, file, document, position) {
   return targets;
 }
 
-function buildTargetHover(index, root, target) {
+function buildTargetHover(index, root, target, invalidationState = null) {
   // Target hovers are the main navigation surface: show graph info and link
   // related targets directly from the hover body.
   const markdown = createMarkdown();
@@ -460,6 +576,7 @@ function buildTargetHover(index, root, target) {
           : "`None`"
       },
       ...buildTargetOptionRows(target),
+      ...buildInvalidationRows(index, target, invalidationState),
       ...buildMetaRows(index, target)
     ]);
     appendMetaDetails(markdown, index, target);
@@ -481,6 +598,7 @@ function buildTargetHover(index, root, target) {
         value: downstreamSummaryValue
       },
       ...buildTargetOptionRows(target),
+      ...buildInvalidationRows(index, target, invalidationState),
       ...buildMetaRows(index, target)
     ]);
     appendMetaDetails(markdown, index, target);
@@ -497,15 +615,46 @@ function buildTargetHover(index, root, target) {
   return new vscode.Hover(markdown);
 }
 
-class TargetHoverProvider {
-  constructor(indexManager) {
-    this.indexManager = indexManager;
+function findGeneratedRegionTargetAtPosition(index, file, point) {
+  const region = findCompletionRegion(index, file, point);
+  if (!region || !region.generated || !Array.isArray(region.enclosingTargets)) {
+    return null;
   }
 
-  async tryBuildHover(index, root, file, document, point) {
-    const target = findTargetAtPosition(index, file, point);
+  const targets = getHoverTargets(index);
+  for (const targetName of region.enclosingTargets) {
+    const target = targets.get(targetName);
     if (target) {
-      return buildTargetHover(index, root, target);
+      return target;
+    }
+  }
+
+  return null;
+}
+
+class TargetHoverProvider {
+  constructor(indexManager, invalidationProvider = null) {
+    this.indexManager = indexManager;
+    this.invalidationProvider = invalidationProvider;
+  }
+
+  getInvalidationState(uri, fallbackRoot = null) {
+    if (!this.invalidationProvider || typeof this.invalidationProvider.getInvalidationState !== "function") {
+      return null;
+    }
+
+    const root = this.indexManager && typeof this.indexManager.getPipelineRootForUri === "function"
+      ? this.indexManager.getPipelineRootForUri(uri)
+      : fallbackRoot;
+    return root ? this.invalidationProvider.getInvalidationState(root) : null;
+  }
+
+  async tryBuildHover(index, root, file, document, point, invalidationState = null) {
+    const target = findTargetAtPosition(index, file, point, {
+      includeSynthetic: true
+    });
+    if (target) {
+      return buildTargetHover(index, root, target, invalidationState);
     }
 
     const wordRange = document.getWordRangeAtPosition(point, /[A-Za-z.][A-Za-z0-9._]*/);
@@ -514,7 +663,7 @@ class TargetHoverProvider {
       const symbol = document.getText(wordRange);
       const value = record.exportedSymbols.get(symbol);
       if (value && value.kind === "TargetObject" && value.target) {
-        return buildTargetHover(index, root, value.target);
+        return buildTargetHover(index, root, value.target, invalidationState);
       }
 
       const containedTargets = flattenTargetsFromValue(value);
@@ -534,6 +683,11 @@ class TargetHoverProvider {
       markdown.appendMarkdown(`Contains **${listTargets.length}** target${listTargets.length === 1 ? "" : "s"}:\n\n`);
       markdown.appendMarkdown(listTargets.map((containedTarget) => `- ${commandLinkForTarget(containedTarget) || `\`${containedTarget.name}\``}`).join("\n"));
       return new vscode.Hover(markdown);
+    }
+
+    const generatedRegionTarget = findGeneratedRegionTargetAtPosition(index, file, point);
+    if (generatedRegionTarget) {
+      return buildTargetHover(index, root, generatedRegionTarget, invalidationState);
     }
 
     const generator = findGeneratorAtPosition(index, file, point);
@@ -574,13 +728,14 @@ class TargetHoverProvider {
       }
 
       const root = this.indexManager.getWorkspaceRoot(document.uri);
+      const invalidationState = this.getInvalidationState(document.uri, root);
       const file = normalizeFile(document.uri.fsPath);
       const point = {
         character: position.character,
         line: position.line
       };
 
-      return this.tryBuildHover(index, root, file, document, point);
+      return this.tryBuildHover(index, root, file, document, point, invalidationState);
     } catch (error) {
       this.indexManager.logFailure("Hover provider failed", error, buildProviderParseContext(document, position, "hoverProvider"));
       return null;

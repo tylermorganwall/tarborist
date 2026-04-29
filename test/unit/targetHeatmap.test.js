@@ -135,11 +135,27 @@ test("getTargetHeatmapOptions() reads target heatmap settings with sane defaults
 
   assert.equal(options.enabled, true);
   assert.equal(options.metric, "runtime");
+  assert.equal(options.minDirectDescendants, DEFAULT_TARGET_HEATMAP_OPTIONS.minDirectDescendants);
   assert.equal(options.minRuntimeSeconds, 2);
   assert.equal(options.notBuiltColor, "rgba(156, 132, 255, 0.18)");
+  assert.deepEqual(options.directDescendantBreaks, DEFAULT_TARGET_HEATMAP_OPTIONS.directDescendantBreaks);
   assert.deepEqual(options.runtimeBreaksSeconds, [10, 60]);
   assert.deepEqual(options.palette, ["rgba(1, 2, 3, 0.1)"]);
   assert.deepEqual(options.sizeBreaksBytes, DEFAULT_TARGET_HEATMAP_OPTIONS.sizeBreaksBytes);
+});
+
+test("getTargetHeatmapOptions() defaults heatmap metric to direct descendants", () => {
+  const {
+    DEFAULT_TARGET_HEATMAP_OPTIONS,
+    getTargetHeatmapOptions
+  } = loadTargetHeatmapWithMockVscode();
+
+  const options = getTargetHeatmapOptions();
+
+  assert.equal(options.metric, "directDescendants");
+  assert.equal(options.minDirectDescendants, 1);
+  assert.deepEqual(options.directDescendantBreaks, [2, 5, 10]);
+  assert.equal(options.metric, DEFAULT_TARGET_HEATMAP_OPTIONS.metric);
 });
 
 test("getTargetStatusDecorationOptions() reads warning/error underline settings", () => {
@@ -218,6 +234,36 @@ test("collectTargetHeatmapAssignments() buckets targets by runtime metadata", ()
   assert.deepEqual((assignments.buckets.get(1) || []).map((assignment) => assignment.targetName), ["x"]);
 });
 
+test("collectTargetHeatmapAssignments() buckets targets by direct descendant count without metadata", () => {
+  const { collectTargetHeatmapAssignments } = loadTargetHeatmapWithMockVscode();
+  const text = [
+    "list(",
+    "  tar_target(a, 1),",
+    "  tar_target(b, a + 1),",
+    "  tar_target(c, a + 2),",
+    "  tar_target(d, c + 1)",
+    ")",
+    ""
+  ].join("\n");
+  const { file, index } = buildIndexFromText(text);
+  const assignments = collectTargetHeatmapAssignments(index, file, {
+    directDescendantBreaks: [2, 3],
+    enabled: true,
+    metric: "directDescendants",
+    minDirectDescendants: 1,
+    minRuntimeSeconds: 1,
+    minSizeBytes: 1024,
+    notBuiltColor: "purple",
+    palette: ["c1", "c2", "c3"],
+    runtimeBreaksSeconds: [5, 30, 120],
+    sizeBreaksBytes: [10 * 1024, 100 * 1024, 1024 * 1024]
+  });
+
+  assert.deepEqual(assignments.notBuilt, []);
+  assert.deepEqual((assignments.buckets.get(0) || []).map((assignment) => assignment.targetName), ["c"]);
+  assert.deepEqual((assignments.buckets.get(1) || []).map((assignment) => assignment.targetName), ["a"]);
+});
+
 test("collectTargetHeatmapAssignments() marks targets with no build timestamp as not built", () => {
   const { collectTargetHeatmapAssignments } = loadTargetHeatmapWithMockVscode();
   const { index, root } = buildIndex("meta_hover");
@@ -273,6 +319,38 @@ test("collectTargetHeatmapAssignments() separates warning-only and error targets
   assert.deepEqual(assignments.error.map((assignment) => assignment.targetName), ["error_only"]);
   assert.deepEqual(assignments.notBuilt.map((assignment) => assignment.targetName), ["not_built"]);
   assert.equal(assignments.buckets.size, 0);
+});
+
+test("collectTargetHeatmapAssignments() does not overlay stale branch warnings on current stem targets", () => {
+  const { collectTargetHeatmapAssignments } = loadTargetHeatmapWithMockVscode();
+  const text = [
+    "list(",
+    "  tar_target(values, 1:2),",
+    "  tar_target(mapped, values + 1)",
+    ")",
+    ""
+  ].join("\n");
+  const meta = [
+    "name|type|data|command|depend|seed|path|time|size|bytes|format|repository|iteration|parent|children|seconds|warnings|error",
+    "values|stem||||||t20371.664038489s|s128b|128|rds|local|vector|||0.101||",
+    "mapped|stem|||||||s0b|0|rds|local|vector||mapped_branch_1,mapped_branch_2|0||",
+    "mapped_branch_1|branch||||||t20371.664038489s|s100b|100|rds|local|vector|mapped||0.500|old warning|",
+    "mapped_branch_2|branch||||||t20371.700000000s|s300b|300|rds|local|vector|mapped||1.250||"
+  ].join("\n");
+  const { file, index } = buildIndexFromText(text, meta);
+  const assignments = collectTargetHeatmapAssignments(index, file, {
+    enabled: true,
+    metric: "size",
+    minRuntimeSeconds: 1,
+    minSizeBytes: 1,
+    notBuiltColor: "purple",
+    palette: ["c1", "c2"],
+    runtimeBreaksSeconds: [5, 30, 120],
+    sizeBreaksBytes: [1000]
+  });
+
+  assert.deepEqual(assignments.warning.map((assignment) => assignment.targetName), []);
+  assert.deepEqual(assignments.error.map((assignment) => assignment.targetName), []);
 });
 
 test("collectTargetHeatmapAssignments() excludes file-format targets from heatmap backgrounds", () => {
@@ -621,6 +699,46 @@ test("collectTargetHeatmapAssignments() marks changed targets on both definition
   assert.deepEqual(assignments.downstream.map((assignment) => assignment.targetName), ["b"]);
   assert.match(assignments.changed[0].hoverMessage, /changed since the last tracked build/);
   assert.match(assignments.downstream[0].hoverMessage, /may be invalidated by upstream code changes/);
+});
+
+test("collectTargetHeatmapAssignments() collapses tar_map branch invalidation markers on shared template ranges", () => {
+  const { collectTargetHeatmapAssignments } = loadTargetHeatmapWithMockVscode();
+  const text = [
+    "list(",
+    "  tarchetypes::tar_map(",
+    "    values = list(species = c(\"one\", \"two\", \"three\", \"four\", \"five\")),",
+    "    targets::tar_target(fit_penguins, species),",
+    "    targets::tar_target(report_penguins, tar_read(fit_penguins))",
+    "  )",
+    ")",
+    ""
+  ].join("\n");
+  const { file, index } = buildIndexFromText(text);
+  const assignments = collectTargetHeatmapAssignments(index, file, {
+    enabled: false,
+    metric: "size",
+    minRuntimeSeconds: 1,
+    minSizeBytes: 1024,
+    notBuiltColor: "purple",
+    palette: ["c1", "c2"],
+    runtimeBreaksSeconds: [5, 30, 120],
+    sizeBreaksBytes: [1000]
+  }, {
+    changedTargets: new Set([
+      "fit_penguins_one",
+      "fit_penguins_two",
+      "fit_penguins_three",
+      "fit_penguins_four",
+      "fit_penguins_five"
+    ]),
+    downstreamTargets: new Set()
+  }, {
+    enabled: true,
+    includeReferences: true
+  });
+
+  assert.equal(assignments.changed.length, 1);
+  assert.equal(assignments.changed[0].targetName, "fit_penguins_one");
 });
 
 test("collectTargetHeatmapAssignments() can keep invalidation markers on definitions only", () => {

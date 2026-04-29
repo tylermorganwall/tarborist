@@ -1821,7 +1821,7 @@ function buildStaticWorkspaceIndex(options) {
     partial: state.partial,
     refs,
     rootFile,
-    targetsMeta: readTargetsMeta(workspaceRoot, options.readFile),
+    targetsMeta: readTargetsMeta(workspaceRoot, options.readFile, completionTargets),
     targets
   };
 }
