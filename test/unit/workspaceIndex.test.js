@@ -371,6 +371,13 @@ test("reads runtime metadata from _targets/meta/meta", () => {
   assert.equal(meta.error, "error text");
 });
 
+test("reads target progress from _targets/meta/progress", () => {
+  const index = buildIndex("meta_status_decorations");
+
+  assert.equal(index.targetsProgress.get("canceled_target"), "canceled");
+  assert.equal(index.targetsProgress.get("clean_target"), "completed");
+});
+
 test("aggregates dynamic branch metadata onto the parent pattern target", () => {
   const index = buildIndex("meta_dynamic_branches");
   const meta = index.targetsMeta.get("mapped");

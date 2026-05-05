@@ -398,6 +398,29 @@ test("hover shows not built yet when a meta row exists without a timestamp", asy
   assert.match(markdown, /\| \*\*Size\*\* \| `128 B` \|/);
 });
 
+test("hover shows canceled target progress", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("meta_status_decorations");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(canceled_target"));
+  const position = { line: lineIndex, character: text.split("\n")[lineIndex].indexOf("canceled_target") };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+  const markdown = hover.contents[0].value;
+
+  assert.match(markdown, /\| \*\*Status\*\* \| `canceled` \|/);
+});
+
 test("hover labels file-format target bytes as file size", async () => {
   const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
   const { index, root } = buildIndex("meta_file_hover");

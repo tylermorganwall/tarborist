@@ -25,6 +25,7 @@ const DEFAULT_TARGET_HEATMAP_OPTIONS = Object.freeze({
   sizeBreaksBytes: [10 * 1024, 100 * 1024, 1024 * 1024]
 });
 const DEFAULT_TARGET_STATUS_DECORATION_OPTIONS = Object.freeze({
+  canceledColor: "rgba(107, 114, 128, 0.95)",
   enabled: true,
   errorColor: "rgba(220, 38, 38, 0.95)",
   style: "icon",
@@ -113,6 +114,8 @@ function getTargetStatusDecorationOptions(config = vscode.workspace.getConfigura
     ? "icon"
     : "underline";
   return {
+    canceledColor: String(config.get("targetStatusDecorations.canceledColor", DEFAULT_TARGET_STATUS_DECORATION_OPTIONS.canceledColor) || "").trim()
+      || DEFAULT_TARGET_STATUS_DECORATION_OPTIONS.canceledColor,
     enabled: Boolean(config.get("targetStatusDecorations.enabled", DEFAULT_TARGET_STATUS_DECORATION_OPTIONS.enabled)),
     errorColor: String(config.get("targetStatusDecorations.errorColor", DEFAULT_TARGET_STATUS_DECORATION_OPTIONS.errorColor) || "").trim()
       || DEFAULT_TARGET_STATUS_DECORATION_OPTIONS.errorColor,
@@ -696,7 +699,9 @@ function dedupeAssignments(assignments, options = {}) {
 function buildStatusHoverMessage(kind, targetName, detail = null) {
   const header = kind === "error"
     ? `Last build recorded an error for target '${targetName}'.`
-    : `Last build recorded a warning for target '${targetName}'.`;
+    : (kind === "warning"
+      ? `Last build recorded a warning for target '${targetName}'.`
+      : `Last run canceled target '${targetName}'.`);
   const normalizedDetail = String(detail || "").trim();
   return normalizedDetail ? `${header}\n${normalizedDetail}` : header;
 }
@@ -754,6 +759,7 @@ function collectTargetMarkerAssignments(index, filePath, targetNames, options = 
 function collectTargetHeatmapAssignments(index, filePath, options, invalidationState = null, invalidationOptions = DEFAULT_TARGET_INVALIDATION_DECORATION_OPTIONS) {
   const assignments = {
     buckets: new Map(),
+    canceled: [],
     changed: [],
     downstream: [],
     error: [],
@@ -771,7 +777,14 @@ function collectTargetHeatmapAssignments(index, filePath, options, invalidationS
     }
 
     const meta = index.targetsMeta && index.targetsMeta.get(target.name);
-    if (meta && meta.hasError) {
+    const progress = index.targetsProgress && index.targetsProgress.get(target.name);
+    if (progress === "canceled") {
+      assignments.canceled.push({
+        hoverMessage: buildStatusHoverMessage("canceled", target.name),
+        range: target.nameRange,
+        targetName: target.name
+      });
+    } else if (meta && meta.hasError) {
       assignments.error.push({
         hoverMessage: buildStatusHoverMessage("error", target.name, meta.error),
         range: target.nameRange,
@@ -787,6 +800,10 @@ function collectTargetHeatmapAssignments(index, filePath, options, invalidationS
 
     if (isMetadataHeatmapMetric(options.metric)) {
       if (isHeatmapExcludedTarget(meta)) {
+        continue;
+      }
+
+      if (progress === "canceled") {
         continue;
       }
 
@@ -865,6 +882,7 @@ function createStatusDecorationOptions(color, style, iconText) {
 class TargetHeatmapController {
   constructor(indexManager) {
     this.indexManager = indexManager;
+    this.canceledDecorationType = null;
     this.changedDecorationType = null;
     this.decorationKey = "";
     this.errorDecorationType = null;
@@ -892,6 +910,10 @@ class TargetHeatmapController {
       this.errorDecorationType.dispose();
     }
 
+    if (this.canceledDecorationType) {
+      this.canceledDecorationType.dispose();
+    }
+
     if (this.changedDecorationType) {
       this.changedDecorationType.dispose();
     }
@@ -905,6 +927,7 @@ class TargetHeatmapController {
     }
 
     this.decorationTypes = [];
+    this.canceledDecorationType = null;
     this.changedDecorationType = null;
     this.downstreamDecorationType = null;
     this.errorDecorationType = null;
@@ -934,6 +957,9 @@ class TargetHeatmapController {
     this.errorDecorationType = vscode.window.createTextEditorDecorationType(
       createStatusDecorationOptions(statusOptions.errorColor, statusOptions.style, "\u2716")
     );
+    this.canceledDecorationType = vscode.window.createTextEditorDecorationType(
+      createStatusDecorationOptions(statusOptions.canceledColor, statusOptions.style, "\u2298")
+    );
     this.changedDecorationType = vscode.window.createTextEditorDecorationType(
       createIconDecorationOptions(invalidationOptions.color, "\u25CF", "before")
     );
@@ -959,6 +985,10 @@ class TargetHeatmapController {
 
     if (this.errorDecorationType) {
       editor.setDecorations(this.errorDecorationType, []);
+    }
+
+    if (this.canceledDecorationType) {
+      editor.setDecorations(this.canceledDecorationType, []);
     }
 
     if (this.changedDecorationType) {
@@ -1062,6 +1092,15 @@ class TargetHeatmapController {
         this.errorDecorationType,
         statusOptions.enabled
           ? this.getMarkerDecorationEntries(assignments.error, statusOptions.style)
+          : []
+      );
+    }
+
+    if (this.canceledDecorationType) {
+      editor.setDecorations(
+        this.canceledDecorationType,
+        statusOptions.enabled
+          ? this.getMarkerDecorationEntries(assignments.canceled, statusOptions.style)
           : []
       );
     }

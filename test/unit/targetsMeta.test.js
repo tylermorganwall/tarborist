@@ -7,6 +7,7 @@ const {
   detectDefaultTimeZone,
   formatTimestampInTimeZone,
   parseTargetsMeta,
+  parseTargetsProgress,
   resolveDisplayTimeZone
 } = require("../../src/index/targetsMeta");
 
@@ -89,4 +90,17 @@ test("parseTargetsMeta() ignores stale stem metadata for current pattern targets
   ]));
 
   assert.equal(meta.has("mapped"), false);
+});
+
+test("parseTargetsProgress() reads the latest progress status for current targets", () => {
+  const progress = parseTargetsProgress([
+    "name|type|parent|branches|progress",
+    "x|stem|x|0|dispatched",
+    "x|stem|x|0|cancelled",
+    "stale|stem|stale|0|canceled"
+  ].join("\n"), new Map([
+    ["x", target("x")]
+  ]));
+
+  assert.deepEqual([...progress.entries()], [["x", "canceled"]]);
 });

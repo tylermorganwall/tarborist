@@ -39,7 +39,7 @@ const { resolveFilePathExpression, resolveImportCall } = require("./importResolv
 const { scanQuartoDependencyRefs } = require("./quartoScanner");
 const { assignStaticTableColumn, resolveStaticTableExpression } = require("./staticTable");
 const { expandTarMap } = require("./tarMapExpander");
-const { readTargetsMeta } = require("./targetsMeta");
+const { readTargetsMeta, readTargetsProgress } = require("./targetsMeta");
 const { evaluateTidyselectNode } = require("./tidyselect");
 const { createTargetDefinition, extractTargetName, extractTargetOptions, parseTarTargetCall } = require("./targetFactories");
 
@@ -1752,6 +1752,7 @@ function buildStaticWorkspaceIndex(options) {
     refs: [],
     rootFile,
     targetsMeta: new Map(),
+    targetsProgress: new Map(),
     targets: new Map()
   };
 
@@ -1822,6 +1823,7 @@ function buildStaticWorkspaceIndex(options) {
     refs,
     rootFile,
     targetsMeta: readTargetsMeta(workspaceRoot, options.readFile, completionTargets),
+    targetsProgress: readTargetsProgress(workspaceRoot, options.readFile, completionTargets),
     targets
   };
 }

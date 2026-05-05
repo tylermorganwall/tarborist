@@ -26,6 +26,10 @@ const META_COLUMNS = [
   "warnings",
   "error"
 ];
+const PROGRESS_COLUMNS = [
+  "name",
+  "progress"
+];
 
 function splitMetaLine(line, columnCount) {
   const parts = line.split("|");
@@ -277,6 +281,11 @@ function createMetaFromRow(row) {
   };
 }
 
+function normalizeProgress(value) {
+  const progress = String(value || "").trim().toLowerCase();
+  return progress === "cancelled" ? "canceled" : progress;
+}
+
 function uniqueTexts(values) {
   return [...new Set(values
     .map((value) => String(value || "").trim())
@@ -447,6 +456,37 @@ function parseTargetsMeta(text, currentTargets = null) {
   return filterMetaForCurrentTargets(metaByTarget, currentTargets);
 }
 
+function parseTargetsProgress(text, currentTargets = null) {
+  const lines = text.split(/\r?\n/).filter((line) => line.length);
+  if (!lines.length) {
+    return new Map();
+  }
+
+  const header = lines[0].split("|");
+  const columns = header.includes("name") && header.includes("progress") ? header : PROGRESS_COLUMNS;
+  const currentTargetMap = currentTargetsToMap(currentTargets);
+  const progressByTarget = new Map();
+
+  for (const line of lines.slice(1)) {
+    const values = splitMetaLine(line, columns.length);
+    const row = {};
+    for (let index = 0; index < columns.length; index += 1) {
+      row[columns[index]] = values[index] || "";
+    }
+
+    if (!row.name || (currentTargetMap && !currentTargetMap.has(row.name))) {
+      continue;
+    }
+
+    const progress = normalizeProgress(row.progress);
+    if (progress) {
+      progressByTarget.set(row.name, progress);
+    }
+  }
+
+  return progressByTarget;
+}
+
 function readTargetsMeta(workspaceRoot, readFile, currentTargets = null) {
   const metaFile = normalizeFile(path.join(workspaceRoot, "_targets", "meta", "meta"));
   if (!pathExists(metaFile)) {
@@ -460,10 +500,25 @@ function readTargetsMeta(workspaceRoot, readFile, currentTargets = null) {
   }
 }
 
+function readTargetsProgress(workspaceRoot, readFile, currentTargets = null) {
+  const progressFile = normalizeFile(path.join(workspaceRoot, "_targets", "meta", "progress"));
+  if (!pathExists(progressFile)) {
+    return new Map();
+  }
+
+  try {
+    return parseTargetsProgress(readFile(progressFile), currentTargets);
+  } catch (_error) {
+    return new Map();
+  }
+}
+
 module.exports = {
   detectDefaultTimeZone,
   formatTimestampInTimeZone,
   parseTargetsMeta,
+  parseTargetsProgress,
   readTargetsMeta,
+  readTargetsProgress,
   resolveDisplayTimeZone
 };

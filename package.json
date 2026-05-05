@@ -5,7 +5,7 @@
   "description": "Static analysis for navigating and debugging complex R targets pipelines",
   "icon": "tarborist.png",
   "license": "GPL-3.0-or-later",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/tylermorganwall/tarborist.git"
@@ -140,7 +140,7 @@
         "tarborist.targetStatusDecorations.enabled": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Mark target definition names when `_targets/meta/meta` reports a warning or error status for the last build."
+          "markdownDescription": "Mark target definition names when `_targets/meta/meta` reports a warning or error status for the last build or `_targets/meta/progress` reports a canceled target."
         },
         "tarborist.targetStatusDecorations.style": {
           "type": "string",
@@ -149,7 +149,12 @@
             "icon"
           ],
           "default": "icon",
-          "markdownDescription": "Render target warning/error status as a leading icon before the target name or as a wavy underline."
+          "markdownDescription": "Render target warning/error/canceled status as an icon next to the target name or as a wavy underline."
+        },
+        "tarborist.targetStatusDecorations.canceledColor": {
+          "type": "string",
+          "default": "rgba(107, 114, 128, 0.95)",
+          "markdownDescription": "Decoration color for targets whose last run was canceled."
         },
         "tarborist.targetStatusDecorations.errorColor": {
           "type": "string",

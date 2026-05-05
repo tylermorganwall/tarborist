@@ -209,7 +209,11 @@ function buildTargetOptionRows(target) {
   return rows;
 }
 
-function buildMetaStatus(meta) {
+function buildMetaStatus(meta, progress = null) {
+  if (progress === "canceled") {
+    return "`canceled`";
+  }
+
   if (!meta) {
     return null;
   }
@@ -305,7 +309,8 @@ function appendTextBlock(markdown, title, text) {
 
 function buildMetaRows(index, target) {
   const meta = index.targetsMeta && index.targetsMeta.get(target.name);
-  if (!meta) {
+  const progress = index.targetsProgress && index.targetsProgress.get(target.name);
+  if (!meta && progress !== "canceled") {
     return [];
   }
 
@@ -320,17 +325,17 @@ function buildMetaRows(index, target) {
 
   rows.push({
     label: "Status",
-    value: buildMetaStatus(meta)
+    value: buildMetaStatus(meta, progress)
   });
 
-  if (meta.runtime) {
+  if (meta && meta.runtime) {
     rows.push({
       label: "Runtime",
       value: `\`${meta.runtime}\``
     });
   }
 
-  if (meta.size) {
+  if (meta && meta.size) {
     rows.push({
       label: meta.sizeLabel || "Size",
       value: `\`${meta.size}\``

@@ -163,6 +163,7 @@ test("getTargetStatusDecorationOptions() reads warning/error underline settings"
     DEFAULT_TARGET_STATUS_DECORATION_OPTIONS,
     getTargetStatusDecorationOptions
   } = loadTargetHeatmapWithMockVscode({
+    "targetStatusDecorations.canceledColor": "#777777",
     "targetStatusDecorations.enabled": true,
     "targetStatusDecorations.errorColor": "#ff0000",
     "targetStatusDecorations.style": "icon",
@@ -172,6 +173,7 @@ test("getTargetStatusDecorationOptions() reads warning/error underline settings"
   const options = getTargetStatusDecorationOptions();
 
   assert.equal(options.enabled, true);
+  assert.equal(options.canceledColor, "#777777");
   assert.equal(options.errorColor, "#ff0000");
   assert.equal(options.style, "icon");
   assert.equal(options.warningColor, "#ffff00");
@@ -317,6 +319,7 @@ test("collectTargetHeatmapAssignments() separates warning-only and error targets
 
   assert.deepEqual(assignments.warning.map((assignment) => assignment.targetName), ["warn_only"]);
   assert.deepEqual(assignments.error.map((assignment) => assignment.targetName), ["error_only"]);
+  assert.deepEqual(assignments.canceled.map((assignment) => assignment.targetName), ["canceled_target"]);
   assert.deepEqual(assignments.notBuilt.map((assignment) => assignment.targetName), ["not_built"]);
   assert.equal(assignments.buckets.size, 0);
 });
@@ -772,6 +775,7 @@ test("TargetHeatmapController applies warning/error underline decorations withou
     TargetHeatmapController,
     createdDecorationTypes
   } = loadTargetHeatmapWithMockVscode({
+    "targetStatusDecorations.canceledColor": "#777777",
     "targetStatusDecorations.enabled": true,
     "targetStatusDecorations.errorColor": "#ff0000",
     "targetStatusDecorations.style": "underline",
@@ -805,21 +809,26 @@ test("TargetHeatmapController applies warning/error underline decorations withou
 
   const errorDecorationType = createdDecorationTypes.find((decorationType) => decorationType.options.textDecoration === "underline wavy #ff0000");
   const warningDecorationType = createdDecorationTypes.find((decorationType) => decorationType.options.textDecoration === "underline wavy #ffff00");
+  const canceledDecorationType = createdDecorationTypes.find((decorationType) => decorationType.options.textDecoration === "underline wavy #777777");
   const notBuiltDecorationType = createdDecorationTypes.find((decorationType) => decorationType.options.backgroundColor === "rgba(156, 132, 255, 0.18)");
 
   assert.ok(errorDecorationType);
   assert.ok(warningDecorationType);
+  assert.ok(canceledDecorationType);
   assert.ok(notBuiltDecorationType);
 
   const errorCall = calls.find((call) => call.decorationType === errorDecorationType);
   const warningCall = calls.find((call) => call.decorationType === warningDecorationType);
+  const canceledCall = calls.find((call) => call.decorationType === canceledDecorationType);
   const notBuiltCall = calls.find((call) => call.decorationType === notBuiltDecorationType);
 
   assert.equal(errorCall.ranges.length, 1);
   assert.equal(warningCall.ranges.length, 1);
+  assert.equal(canceledCall.ranges.length, 1);
   assert.equal(notBuiltCall.ranges.length, 0);
   assert.match(errorCall.ranges[0].hoverMessage, /Last build recorded an error/);
   assert.match(warningCall.ranges[0].hoverMessage, /Last build recorded a warning/);
+  assert.match(canceledCall.ranges[0].hoverMessage, /Last run canceled target/);
 });
 
 test("TargetHeatmapController can render warning/error status as leading icons", async () => {
@@ -827,6 +836,7 @@ test("TargetHeatmapController can render warning/error status as leading icons",
     TargetHeatmapController,
     createdDecorationTypes
   } = loadTargetHeatmapWithMockVscode({
+    "targetStatusDecorations.canceledColor": "#777777",
     "targetStatusDecorations.enabled": true,
     "targetStatusDecorations.errorColor": "#ff0000",
     "targetStatusDecorations.style": "icon",
@@ -865,20 +875,31 @@ test("TargetHeatmapController can render warning/error status as leading icons",
     && decorationType.options.after.contentText === "\u25B2"
     && decorationType.options.after.color === "#ffaa00"
   ));
+  const canceledDecorationType = createdDecorationTypes.find((decorationType) => (
+    decorationType.options.after
+    && decorationType.options.after.contentText === "\u2298"
+    && decorationType.options.after.color === "#777777"
+  ));
 
   assert.ok(errorDecorationType);
   assert.ok(warningDecorationType);
+  assert.ok(canceledDecorationType);
   assert.equal(errorDecorationType.options.after.fontSize, "1.05em");
   assert.equal(warningDecorationType.options.after.fontSize, "1.05em");
+  assert.equal(canceledDecorationType.options.after.fontSize, "1.05em");
   const errorCall = calls.find((call) => call.decorationType === errorDecorationType);
   const warningCall = calls.find((call) => call.decorationType === warningDecorationType);
+  const canceledCall = calls.find((call) => call.decorationType === canceledDecorationType);
 
   assert.equal(errorCall.ranges.length, 1);
   assert.equal(warningCall.ranges.length, 1);
+  assert.equal(canceledCall.ranges.length, 1);
   assert.deepEqual(errorCall.ranges[0].range.start, errorCall.ranges[0].range.end);
   assert.deepEqual(warningCall.ranges[0].range.start, warningCall.ranges[0].range.end);
+  assert.deepEqual(canceledCall.ranges[0].range.start, canceledCall.ranges[0].range.end);
   assert.equal(errorCall.ranges[0].hoverMessage, undefined);
   assert.equal(warningCall.ranges[0].hoverMessage, undefined);
+  assert.equal(canceledCall.ranges[0].hoverMessage, undefined);
 });
 
 test("TargetHeatmapController can render invalidation icons for changed and downstream targets", async () => {

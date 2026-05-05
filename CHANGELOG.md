@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## [0.15.0] - 2026-05-05
+
+### Added
+
+- Target hovers and status decorations now read `_targets/meta/progress` so canceled targets are surfaced even when `_targets/meta/meta` does not have a completed build row.
+- Added `tarborist.targetStatusDecorations.canceledColor` to configure the canceled-target status decoration color.
+
+### Changed
+
+- Status decorations now describe warning, error, and canceled target states consistently in settings, hover text, and README feature summaries.
+
+## [0.14.0] - 2026-04-28
+
 ### Added
 
 - Target heatmaps can now use direct descendant counts from the static target graph.

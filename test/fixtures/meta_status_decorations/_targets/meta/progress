@@ -1,0 +1,5 @@
+name|type|parent|branches|progress
+warn_only|stem|warn_only|0|completed
+error_only|stem|error_only|0|errored
+clean_target|stem|clean_target|0|completed
+canceled_target|stem|canceled_target|0|canceled

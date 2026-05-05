@@ -36,7 +36,7 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - Adds a Positron-only `Targets: tar_load Here` command that loads the target under the cursor or selection into `.GlobalEnv` through the active R console
 - Provides target-aware autocomplete only in valid target/factory command and pattern regions, including unsaved in-progress edits inside those regions
 - Uses the full statically available target universe for hover and autocomplete, even when helpers such as `tar_select_targets()` trim the final pipeline
-- Shows upstream/downstream info, cue settings, parallel-related target options, disabled-in-final-pipeline status, build size, build runtime, and indirect downstream depth markers in hover text and related pickers
+- Shows upstream/downstream info, cue settings, parallel-related target options, disabled-in-final-pipeline status, build size, build runtime, canceled progress, and indirect downstream depth markers in hover text and related pickers
 - Can optionally color target definition names by direct descendant count, build size, or runtime using configurable heatmap buckets
 - Emits more specific diagnostics for malformed pipeline `list(...)` entries, including likely missing commas and unsupported target factories
 
