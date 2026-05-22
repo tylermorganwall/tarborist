@@ -4,6 +4,7 @@
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const Module = require("module");
+const os = require("os");
 const path = require("path");
 const test = require("node:test");
 
@@ -19,6 +20,23 @@ function buildIndex(fixtureName, options = {}) {
     readFile: (file) => fs.readFileSync(file, "utf8"),
     workspaceRoot: root
   });
+}
+
+function withTemporaryIndex(text, callback, options = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tarborist-index-"));
+  try {
+    fs.writeFileSync(path.join(root, "_targets.R"), text);
+    return callback(buildStaticWorkspaceIndex({
+      ...options,
+      readFile: (file) => fs.readFileSync(file, "utf8"),
+      workspaceRoot: root
+    }), root);
+  } finally {
+    fs.rmSync(root, {
+      force: true,
+      recursive: true
+    });
+  }
 }
 
 function loadWorkspaceIndexWithMockVscode() {
@@ -441,6 +459,60 @@ test("isolates incomplete target commands to the surrounding target instead of t
   assert.ok(summary);
   assert.match(summary.message, /_targets\.R:2 unsupported or incomplete command expression in target 'plot'/);
 });
+
+test("reports assigned subpipeline context for malformed target recovery", () => withTemporaryIndex(`
+preprocess <- list(
+  tar_target(raw_data, 1),
+  tar_target(clean_data, {
+    raw_data +
+  }),
+  tar_target(after_clean, clean_data)
+)
+
+models <- list(
+  tar_target(model, after_clean)
+)
+
+list(
+  preprocess,
+  models
+)
+`, (index) => {
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+  const targetDiagnostic = diagnostics.find((diagnostic) => (
+    diagnostic.message.includes("unsupported or incomplete command expression in target 'clean_data'")
+  ));
+
+  assert.equal(index.partial, true);
+  assert.ok(index.targets.has("clean_data"));
+  assert.ok(targetDiagnostic);
+  assert.match(targetDiagnostic.message, /sub-pipeline 'preprocess'/);
+}));
+
+test("reports inline subpipeline context for malformed nested list recovery", () => withTemporaryIndex(`
+list(
+  list(
+    tar_target(raw_data, 1),
+    tar_target(clean_data, {
+      raw_data +
+    }),
+    tar_target(after_clean, clean_data)
+  ),
+  list(
+    tar_target(model, after_clean)
+  )
+)
+`, (index) => {
+  const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+  const targetDiagnostic = diagnostics.find((diagnostic) => (
+    diagnostic.message.includes("unsupported or incomplete command expression in target 'clean_data'")
+  ));
+
+  assert.equal(index.partial, true);
+  assert.deepEqual([...index.targets.keys()], ["raw_data", "clean_data", "after_clean", "model"]);
+  assert.ok(targetDiagnostic);
+  assert.match(targetDiagnostic.message, /sub-pipeline 'list\(\) item 1'/);
+}));
 
 test("captures cue and parallel target options verbatim", () => {
   const index = buildIndex("target_options");

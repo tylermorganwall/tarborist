@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## [0.15.1] - 2026-05-22
+
+### Changed
+
+- Partial static pipeline analysis now logs actionable diagnostic summaries in the tarborist output channel.
+- Hard index failures now include more reproduction context, including runtime details and open or dirty R documents that may have contributed unsaved buffer contents.
+
+### Fixed
+
+- Malformed assigned and inline sub-pipelines now report where recovery failed, including the sub-pipeline and target when tarborist can infer them.
+- Tree-sitter parser failures now reset the cached parser instance so a later refresh can rebuild it without requiring an extension restart.
+
 ## [0.15.0] - 2026-05-05
 
 ### Added

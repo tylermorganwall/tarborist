@@ -3,12 +3,66 @@
 // Own per-workspace pipeline indexes, file watching, refresh scheduling, and
 // diagnostic publication.
 const fs = require("fs");
+const path = require("path");
 const vscode = require("vscode");
 
 const { buildStaticWorkspaceIndex } = require("./pipelineResolver");
 const { ensureParserReady } = require("../parser/treeSitter");
-const { findNearestTargetsRoot, normalizeFile } = require("../util/paths");
+const { findNearestTargetsRoot, normalizeFile, relativeFile } = require("../util/paths");
 const { toVsCodeDiagnostic } = require("../util/vscode");
+
+function diagnosticOutputLine(root, diagnostic) {
+  const line = diagnostic.range && diagnostic.range.start
+    ? diagnostic.range.start.line + 1
+    : 1;
+
+  return `${relativeFile(root, diagnostic.file)}:${line} [${diagnostic.severity}] ${diagnostic.message}`;
+}
+
+function collectDiagnosticOutputLines(root, index, limit = 10) {
+  const diagnostics = [];
+  for (const record of index.files.values()) {
+    for (const diagnostic of record.diagnostics || []) {
+      if (diagnostic.severity !== "warning" && diagnostic.severity !== "information" && diagnostic.severity !== "error") {
+        continue;
+      }
+
+      if (
+        diagnostic.file === index.rootFile
+        && diagnostic.range
+        && diagnostic.range.start
+        && diagnostic.range.start.line === 0
+        && diagnostic.range.start.character === 0
+        && diagnostic.message.startsWith("Static pipeline analysis is partial")
+      ) {
+        continue;
+      }
+
+      diagnostics.push(diagnostic);
+    }
+  }
+
+  diagnostics.sort((left, right) => {
+    if (left.file !== right.file) {
+      return left.file.localeCompare(right.file);
+    }
+
+    const leftLine = left.range && left.range.start ? left.range.start.line : 0;
+    const rightLine = right.range && right.range.start ? right.range.start.line : 0;
+    if (leftLine !== rightLine) {
+      return leftLine - rightLine;
+    }
+
+    const leftCharacter = left.range && left.range.start ? left.range.start.character : 0;
+    const rightCharacter = right.range && right.range.start ? right.range.start.character : 0;
+    return leftCharacter - rightCharacter;
+  });
+
+  return {
+    lines: diagnostics.slice(0, limit).map((diagnostic) => diagnosticOutputLine(root, diagnostic)),
+    remaining: Math.max(0, diagnostics.length - limit)
+  };
+}
 
 class WorkspaceIndexManager {
   constructor(outputChannel) {
@@ -163,6 +217,64 @@ class WorkspaceIndexManager {
     };
   }
 
+  getOpenDocumentDebugDetails(root) {
+    const openRDocuments = [];
+    const dirtyRDocuments = [];
+
+    for (const document of vscode.workspace.textDocuments || []) {
+      if (!document || !document.uri || document.uri.scheme !== "file") {
+        continue;
+      }
+
+      const file = normalizeFile(document.uri.fsPath);
+      const relativePath = path.relative(root, file);
+      if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        continue;
+      }
+
+      const lower = file.toLowerCase();
+      if (!lower.endsWith(".r")) {
+        continue;
+      }
+
+      const label = relativeFile(root, file);
+      openRDocuments.push(label);
+      if (document.isDirty) {
+        dirtyRDocuments.push(label);
+      }
+    }
+
+    return {
+      dirtyRDocuments: dirtyRDocuments.join(", "),
+      openRDocuments: openRDocuments.join(", ")
+    };
+  }
+
+  logIndexSummary(root, index) {
+    if (!this.outputChannel) {
+      return;
+    }
+
+    this.outputChannel.appendLine(`Indexed ${index.targets.size} targets from ${root}${index.partial ? " (partial)" : ""}.`);
+    if (!index.partial) {
+      return;
+    }
+
+    const { lines, remaining } = collectDiagnosticOutputLines(root, index);
+    if (!lines.length) {
+      return;
+    }
+
+    this.outputChannel.appendLine("Partial analysis diagnostics:");
+    for (const line of lines) {
+      this.outputChannel.appendLine(`  ${line}`);
+    }
+
+    if (remaining > 0) {
+      this.outputChannel.appendLine(`  ... and ${remaining} more diagnostic${remaining === 1 ? "" : "s"}.`);
+    }
+  }
+
   async refreshAll() {
     const refreshes = [];
     for (const folder of vscode.workspace.workspaceFolders || []) {
@@ -226,14 +338,17 @@ class WorkspaceIndexManager {
           root
         });
 
-        if (this.outputChannel) {
-          this.outputChannel.appendLine(`Indexed ${index.targets.size} targets from ${root}${index.partial ? " (partial)" : ""}.`);
-        }
+        this.logIndexSummary(root, index);
 
         return index;
       } catch (error) {
         this.logFailure(`Failed to index ${root}`, error, {
           additionalSingleTargetFactories: this.getResolverOptions().additionalSingleTargetFactories.join(", "),
+          node: process.version,
+          platform: `${process.platform} ${process.arch}`,
+          rootFile: normalizeFile(`${root}/_targets.R`),
+          vscode: vscode.version,
+          ...this.getOpenDocumentDebugDetails(root),
           workspaceRoot: root
         });
 

@@ -42,6 +42,19 @@ function analyzeFile(file, text) {
 
     const assignment = getAssignmentParts(node);
     if (assignment) {
+      const malformedAssignmentCallName = getCalleeName(assignment.rhs);
+      if (malformedAssignmentCallName && nextNode && nextNode.type === "ERROR" && MALFORMED_PIPELINE_CALLS.has(malformedAssignmentCallName)) {
+        statements.push({
+          calleeNode: assignment.rhs,
+          callName: malformedAssignmentCallName,
+          kind: "malformedPipelineAssignment",
+          node: nextNode,
+          symbol: assignment.symbol
+        });
+        index += 1;
+        continue;
+      }
+
       statements.push({
         kind: "assignment",
         node,

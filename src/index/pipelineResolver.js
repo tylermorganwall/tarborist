@@ -131,6 +131,68 @@ function addDiagnostic(state, file, range, severity, message) {
   }
 }
 
+function withSubpipelineContext(context, subpipeline) {
+  if (!subpipeline) {
+    return context || {};
+  }
+
+  return {
+    ...(context || {}),
+    subpipeline
+  };
+}
+
+function withTargetContext(context, targetName) {
+  if (!targetName) {
+    return context || {};
+  }
+
+  return {
+    ...(context || {}),
+    targetName
+  };
+}
+
+function addPipelineContext(message, context) {
+  const details = [];
+  if (context && context.subpipeline) {
+    details.push(`sub-pipeline '${context.subpipeline}'`);
+  }
+
+  if (context && context.targetName && !message.includes(`target '${context.targetName}'`)) {
+    details.push(`target '${context.targetName}'`);
+  }
+
+  return details.length ? `${message} (${details.join(", ")})` : message;
+}
+
+function makeContextualUnknown(file, range, message, context, alreadyDiagnosed = false) {
+  return makeUnknown(file, range, addPipelineContext(message, context), alreadyDiagnosed);
+}
+
+function pipelineParseContext(file, phase, range, context, extra = {}) {
+  const result = {
+    file,
+    phase,
+    ...extra
+  };
+
+  if (range && range.start) {
+    result.character = range.start.character;
+    result.line = range.start.line + 1;
+  }
+
+  if (context && context.subpipeline) {
+    result.subpipeline = context.subpipeline;
+  }
+
+  if (context && context.targetName) {
+    result.target = context.targetName;
+  }
+
+  return result;
+}
+
 function compareDiagnosticLocations(left, right) {
   if (left.file !== right.file) {
     return left.file.localeCompare(right.file);
@@ -225,7 +287,7 @@ function looksLikePipelineListItem(node) {
     || current.type === "namespace_operator";
 }
 
-function addListSyntaxDiagnostics(callNode, state, file, containerLabel = "list()") {
+function addListSyntaxDiagnostics(callNode, state, file, containerLabel = "list()", context = {}) {
   const argumentsNode = callNode && callNode.childForFieldName
     ? callNode.childForFieldName("arguments")
     : null;
@@ -252,7 +314,7 @@ function addListSyntaxDiagnostics(callNode, state, file, containerLabel = "list(
       file,
       rangeFromNode(getListLintRepresentative(child) || child),
       "warning",
-      `Static pipeline analysis is partial: possible missing comma after pipeline item in ${containerLabel}`
+      addPipelineContext(`Static pipeline analysis is partial: possible missing comma after pipeline item in ${containerLabel}`, context)
     );
   }
 }
@@ -267,8 +329,42 @@ function isValidPipelineListValue(value) {
   );
 }
 
-function resolveListItemValue(argument, env, state, file, containerLabel = "list()") {
-  const resolved = resolveTopLevelValue(argument.value, env, state, file);
+function getPipelineContainerInfoFromNode(node) {
+  const current = unwrapNode(node);
+  if (!current || current.type !== "call") {
+    return null;
+  }
+
+  const callName = getShortCallName(current);
+  if (callName !== "list" && !PLAN_CALLS.has(callName)) {
+    return null;
+  }
+
+  return {
+    callName
+  };
+}
+
+function getPipelineArgumentContext(argument, containerLabel, context) {
+  const containerInfo = getPipelineContainerInfoFromNode(argument.value);
+  if (!containerInfo) {
+    return context || {};
+  }
+
+  return withSubpipelineContext(
+    context,
+    argument.name || `${containerLabel} item ${argument.index + 1}`
+  );
+}
+
+function getAssignmentPipelineContext(valueNode, symbol) {
+  return getPipelineContainerInfoFromNode(valueNode)
+    ? withSubpipelineContext({}, symbol)
+    : {};
+}
+
+function resolveListItemValue(argument, env, state, file, containerLabel = "list()", context = {}) {
+  const resolved = resolveTopLevelValue(argument.value, env, state, file, context);
   if (isValidPipelineListValue(resolved)) {
     return resolved;
   }
@@ -285,18 +381,20 @@ function resolveListItemValue(argument, env, state, file, containerLabel = "list
   if (current && current.type === "call") {
     const callName = getShortCallName(current);
     if (callName) {
-      return makeUnknown(
+      return makeContextualUnknown(
         file,
         rangeFromNode(argument.value),
-        `Static pipeline analysis is partial: unsupported target factory '${callName}()' in ${containerLabel}; add it to tarborist.additionalSingleTargetFactories if it is single-target and tar_target()-like`
+        `Static pipeline analysis is partial: unsupported target factory '${callName}()' in ${containerLabel}; add it to tarborist.additionalSingleTargetFactories if it is single-target and tar_target()-like`,
+        context
       );
     }
   }
 
-  return makeUnknown(
+  return makeContextualUnknown(
     file,
     rangeFromNode(argument.value),
-    `Static pipeline analysis is partial: ${containerLabel} pipeline items must be target factories, target objects, or pipeline lists`
+    `Static pipeline analysis is partial: ${containerLabel} pipeline items must be target factories, target objects, or pipeline lists`,
+    context
   );
 }
 
@@ -408,21 +506,22 @@ function readSubsetIndex(node) {
   return null;
 }
 
-function resolveSubsetValue(node, env, state, file) {
+function resolveSubsetValue(node, env, state, file, context = {}) {
   const parts = getSubsetParts(node);
   if (!parts) {
-    return makeUnknown(file, rangeFromNode(node), "Static pipeline analysis is partial: unsupported expression in pipeline");
+    return makeContextualUnknown(file, rangeFromNode(node), "Static pipeline analysis is partial: unsupported expression in pipeline", context);
   }
 
-  const containerValue = resolveTopLevelValue(parts.targetNode, env, state, file);
+  const containerValue = resolveTopLevelValue(parts.targetNode, env, state, file, context);
   const concreteTargets = collectConcreteTargets(containerValue);
   const indexValue = readSubsetIndex(parts.indexNode);
 
   if (!indexValue) {
-    return makeUnknown(
+    return makeContextualUnknown(
       file,
       rangeFromNode(parts.indexNode),
-      "Static pipeline analysis is partial: could not statically resolve list subset expression"
+      "Static pipeline analysis is partial: could not statically resolve list subset expression",
+      context
     );
   }
 
@@ -430,10 +529,11 @@ function resolveSubsetValue(node, env, state, file) {
     const matchedTarget = concreteTargets.find((target) => target.name === indexValue.value);
     return matchedTarget
       ? makeTargetObject(matchedTarget)
-      : makeUnknown(
+      : makeContextualUnknown(
         file,
         rangeFromNode(parts.indexNode),
-        `Static pipeline analysis is partial: could not resolve pipeline target '${indexValue.value}' in list subset`
+        `Static pipeline analysis is partial: could not resolve pipeline target '${indexValue.value}' in list subset`,
+        context
       );
   }
 
@@ -442,10 +542,11 @@ function resolveSubsetValue(node, env, state, file) {
     return makeTargetObject(concreteTargets[offset]);
   }
 
-  return makeUnknown(
+  return makeContextualUnknown(
     file,
     rangeFromNode(parts.indexNode),
-    `Static pipeline analysis is partial: list subset index ${indexValue.value} is out of bounds`
+    `Static pipeline analysis is partial: list subset index ${indexValue.value} is out of bounds`,
+    context
   );
 }
 
@@ -629,13 +730,72 @@ function trimSegmentBounds(text, start, end) {
   };
 }
 
+function findCallCloseParenIndex(text, openParen) {
+  let parenDepth = 0;
+  let quote = null;
+  let escaped = false;
+  let inComment = false;
+
+  for (let index = openParen; index < text.length; index += 1) {
+    const character = text[index];
+
+    if (inComment) {
+      if (character === "\n") {
+        inComment = false;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+
+      if (character === "\\") {
+        escaped = true;
+        continue;
+      }
+
+      if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (character === "#") {
+      inComment = true;
+      continue;
+    }
+
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+
+    if (character === "(") {
+      parenDepth += 1;
+      continue;
+    }
+
+    if (character === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      if (parenDepth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
+}
+
 function splitCallBodySegments(callText, absoluteStartOffset) {
   const openParen = callText.indexOf("(");
-  const closeParen = callText.lastIndexOf(")");
   if (openParen === -1) {
     return [];
   }
 
+  const closeParen = findCallCloseParenIndex(callText, openParen);
   const bodyStart = openParen + 1;
   const bodyEnd = closeParen > openParen ? closeParen : callText.length;
   const bodyText = callText.slice(bodyStart, bodyEnd);
@@ -689,16 +849,84 @@ function readRecoveredName(text) {
   return null;
 }
 
-function recoverMalformedTargetFactoryItem(segment, env, state, file, callName, origin = "tar_target") {
+function getSegmentRange(state, file, segment) {
+  const fileText = state.readFile(file);
+  return {
+    end: offsetToPosition(fileText, segment.endOffset),
+    start: offsetToPosition(fileText, segment.startOffset)
+  };
+}
+
+function readRecoveredFactoryTargetName(text) {
+  const argumentSegments = splitCallBodySegments(text, 0);
+  let nameSegment = null;
+  let positionalIndex = 0;
+
+  for (const argumentSegment of argumentSegments) {
+    const named = splitNamedArgumentText(argumentSegment.text);
+    if (named && named.name === "name") {
+      nameSegment = {
+        ...argumentSegment,
+        text: named.value
+      };
+      break;
+    }
+
+    if (!nameSegment && positionalIndex === 0) {
+      nameSegment = argumentSegment;
+    }
+
+    if (!named) {
+      positionalIndex += 1;
+    }
+  }
+
+  return nameSegment ? readRecoveredName(nameSegment.text) : null;
+}
+
+function isRecoveredPipelineContainerCallName(callName) {
+  const shortCallName = getShortCallName(callName);
+  return shortCallName === "list"
+    || PLAN_CALLS.has(callName)
+    || (shortCallName && PLAN_CALLS.has(shortCallName));
+}
+
+function getRecoveredPipelineContainerInfo(text) {
+  const named = splitNamedArgumentText(text);
+  const valueText = named ? named.value : text;
+  const callName = getLeadingCallName(valueText);
+  if (!callName || !isRecoveredPipelineContainerCallName(callName)) {
+    return null;
+  }
+
+  return {
+    callName: getShortCallName(callName) || callName,
+    name: named ? readRecoveredName(named.name) : null,
+    valueText
+  };
+}
+
+function getRecoveredPipelineItemContext(segment, containerCallName, itemIndex, context) {
+  const containerInfo = getRecoveredPipelineContainerInfo(segment.text);
+  if (!containerInfo) {
+    return context || {};
+  }
+
+  const displayCallName = containerCallName.endsWith("()") ? containerCallName : `${containerCallName}()`;
+  return withSubpipelineContext(
+    context,
+    containerInfo.name || `${displayCallName} item ${itemIndex + 1}`
+  );
+}
+
+function recoverMalformedTargetFactoryItem(segment, env, state, file, callName, origin = "tar_target", context = {}) {
   const argumentSegments = splitCallBodySegments(segment.text, segment.startOffset);
   if (!argumentSegments.length) {
-    return makeUnknown(
+    return makeContextualUnknown(
       file,
-      {
-        end: offsetToPosition(state.readFile(file), segment.endOffset),
-        start: offsetToPosition(state.readFile(file), segment.startOffset)
-      },
-      "Static pipeline analysis is partial: unsupported expression in pipeline"
+      getSegmentRange(state, file, segment),
+      "Static pipeline analysis is partial: unsupported expression in pipeline",
+      context
     );
   }
 
@@ -736,14 +964,13 @@ function recoverMalformedTargetFactoryItem(segment, env, state, file, callName, 
   }
 
   const name = nameSegment ? readRecoveredName(nameSegment.text) : null;
+  const targetContext = withTargetContext(context, name);
   if (!name || !commandSegment) {
-    return makeUnknown(
+    return makeContextualUnknown(
       file,
-      {
-        end: offsetToPosition(state.readFile(file), segment.endOffset),
-        start: offsetToPosition(state.readFile(file), segment.startOffset)
-      },
-      `Static pipeline analysis is partial: could not recover malformed ${callName}() target`
+      getSegmentRange(state, file, segment),
+      `Static pipeline analysis is partial: could not recover malformed ${callName}() target`,
+      targetContext
     );
   }
 
@@ -784,15 +1011,48 @@ function recoverMalformedTargetFactoryItem(segment, env, state, file, callName, 
     file,
     target.fullRange,
     "warning",
-    `Static pipeline analysis is partial: unsupported or incomplete command expression in target '${name}'`
+    addPipelineContext(`Static pipeline analysis is partial: unsupported or incomplete command expression in target '${name}'`, targetContext)
   );
   return makeTargetObject(target);
 }
 
-function resolveRecoveredPipelineItem(segment, containerCallName, env, state, file) {
+function recoverMalformedPipelineSegment(segment, containerCallName, env, state, file, context = {}) {
+  const items = splitCallBodySegments(segment.text, segment.startOffset).map((childSegment, index) => (
+    resolveRecoveredPipelineItem(
+      childSegment,
+      containerCallName,
+      env,
+      state,
+      file,
+      getRecoveredPipelineItemContext(childSegment, containerCallName, index, context)
+    )
+  ));
+
+  return makeTargetList(items);
+}
+
+function resolveRecoveredPipelineItem(segment, containerCallName, env, state, file, context = {}) {
   const text = segment.text;
   if (!text) {
     return makeTargetList([]);
+  }
+
+  const containerInfo = getRecoveredPipelineContainerInfo(text);
+  if (containerInfo) {
+    const valueStart = segment.startOffset + text.indexOf(containerInfo.valueText);
+    return recoverMalformedPipelineSegment(
+      {
+        ...segment,
+        endOffset: valueStart + containerInfo.valueText.length,
+        startOffset: valueStart,
+        text: containerInfo.valueText
+      },
+      containerInfo.callName,
+      env,
+      state,
+      file,
+      containerInfo.name ? withSubpipelineContext(context, containerInfo.name) : context
+    );
   }
 
   if (containerCallName !== "list") {
@@ -800,6 +1060,7 @@ function resolveRecoveredPipelineItem(segment, containerCallName, env, state, fi
     if (named) {
       const name = readRecoveredName(named.name);
       if (name) {
+        const targetContext = withTargetContext(context, name);
         const valueStart = segment.startOffset + text.indexOf(named.value);
         const target = {
           _analysis: {
@@ -838,7 +1099,7 @@ function resolveRecoveredPipelineItem(segment, containerCallName, env, state, fi
           file,
           target.fullRange,
           "warning",
-          `Static pipeline analysis is partial: unsupported or incomplete command expression in target '${name}'`
+          addPipelineContext(`Static pipeline analysis is partial: unsupported or incomplete command expression in target '${name}'`, targetContext)
         );
         return makeTargetObject(target);
       }
@@ -846,19 +1107,24 @@ function resolveRecoveredPipelineItem(segment, containerCallName, env, state, fi
   }
 
   if (/^[.A-Za-z][.A-Za-z0-9_]*$/.test(text.trim())) {
-    return env.get(text.trim()) || makeUnknown(
+    return env.get(text.trim()) || makeContextualUnknown(
       file,
-      {
-        end: offsetToPosition(state.readFile(file), segment.endOffset),
-        start: offsetToPosition(state.readFile(file), segment.startOffset)
-      },
-      `Static pipeline analysis is partial: unresolved symbol '${text.trim()}'`
+      getSegmentRange(state, file, segment),
+      `Static pipeline analysis is partial: unresolved symbol '${text.trim()}'`,
+      context
     );
   }
 
+  const callName = getLeadingCallName(text);
+  const targetName = callName && state.callSets.directTargetCalls.has(getShortCallName(callName))
+    ? readRecoveredFactoryTargetName(text)
+    : null;
+  const itemContext = withTargetContext(context, targetName);
+  const segmentRange = getSegmentRange(state, file, segment);
   const parsed = parseText(`${text}\n`, {
-    file,
-    phase: "recoverPipelineItem"
+    ...pipelineParseContext(file, "recoverPipelineItem", segmentRange, itemContext, {
+      pipelineItem: containerCallName
+    })
   });
   const rootExpression = (parsed.rootNode.namedChildren || []).find((child) => child.type !== "comment") || null;
   if (rootExpression && rootExpression.type === "call" && matchesCall(rootExpression, state.callSets.directTargetCalls)) {
@@ -873,22 +1139,19 @@ function resolveRecoveredPipelineItem(segment, containerCallName, env, state, fi
     }
   }
 
-  const callName = getLeadingCallName(text);
   if (callName && state.callSets.directTargetCalls.has(getShortCallName(callName))) {
-    return recoverMalformedTargetFactoryItem(segment, env, state, file, getShortCallName(callName), containerCallName === "list" ? "tar_target" : "tar_plan");
+    return recoverMalformedTargetFactoryItem(segment, env, state, file, getShortCallName(callName), containerCallName === "list" ? "tar_target" : "tar_plan", itemContext);
   }
 
-  return makeUnknown(
+  return makeContextualUnknown(
     file,
-    {
-      end: offsetToPosition(state.readFile(file), segment.endOffset),
-      start: offsetToPosition(state.readFile(file), segment.startOffset)
-    },
-    "Static pipeline analysis is partial: unsupported expression in pipeline"
+    segmentRange,
+    "Static pipeline analysis is partial: unsupported expression in pipeline",
+    context
   );
 }
 
-function resolveMalformedPipelineCall(statement, env, state, file) {
+function resolveMalformedPipelineCall(statement, env, state, file, context = {}) {
   const fileText = state.readFile(file);
   const callStart = positionToOffset(fileText, {
     character: statement.calleeNode.startPosition.column,
@@ -899,11 +1162,18 @@ function resolveMalformedPipelineCall(statement, env, state, file) {
     line: statement.node.endPosition.row
   });
   const callText = fileText.slice(callStart, callEnd);
-  const items = splitCallBodySegments(callText, callStart).map((segment) => (
-    resolveRecoveredPipelineItem(segment, statement.callName, env, state, file)
-  ));
-
-  return makeTargetList(items);
+  return recoverMalformedPipelineSegment(
+    {
+      endOffset: callEnd,
+      startOffset: callStart,
+      text: callText
+    },
+    getShortCallName(statement.callName) || statement.callName,
+    env,
+    state,
+    file,
+    context
+  );
 }
 
 function isPlaceholderIdentifier(node) {
@@ -920,11 +1190,11 @@ function resolveFactoryName(callNode, forcedName, forcedNameNode) {
   };
 }
 
-function resolveTarAssignCall(callNode, env, state, file) {
+function resolveTarAssignCall(callNode, env, state, file, context = {}) {
   const bodyArgument = getNamedArgument(callNode, "targets") || getPositionalArgument(callNode, 0);
   const rawBodyNode = bodyArgument ? getArgumentValue(bodyArgument.node) : null;
   if (!bodyArgument || !rawBodyNode) {
-    return makeUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: tar_assign() requires assignment expressions");
+    return makeContextualUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: tar_assign() requires assignment expressions", context);
   }
 
   const body = unwrapExpressionNode(rawBodyNode);
@@ -937,17 +1207,19 @@ function resolveTarAssignCall(callNode, env, state, file) {
   for (const statement of statements) {
     const assignment = getLocalAssignmentParts(statement);
     if (!assignment || !assignment.symbolNode) {
-      items.push(makeUnknown(file, rangeFromNode(statement || bodyArgument.value), "Static pipeline analysis is partial: tar_assign() requires target factory assignments"));
+      items.push(makeContextualUnknown(file, rangeFromNode(statement || bodyArgument.value), "Static pipeline analysis is partial: tar_assign() requires target factory assignments", context));
       continue;
     }
 
+    const targetContext = withTargetContext(context, assignment.symbol);
     const resolved = resolveTargetFactoryCall(
       assignment.valueNode,
       localEnv,
       state,
       file,
       assignment.symbol,
-      assignment.symbolNode
+      assignment.symbolNode,
+      targetContext
     );
 
     localEnv.set(assignment.symbol, resolved);
@@ -957,13 +1229,13 @@ function resolveTarAssignCall(callNode, env, state, file) {
   return makeTargetList(items);
 }
 
-function resolveTarSelectTargetsCall(callNode, env, state, file) {
+function resolveTarSelectTargetsCall(callNode, env, state, file, context = {}) {
   const targetsArgument = getNamedArgument(callNode, "targets") || getPositionalArgument(callNode, 0);
   if (!targetsArgument || !targetsArgument.value) {
-    return makeUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: tar_select_targets() requires a target list");
+    return makeContextualUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: tar_select_targets() requires a target list", context);
   }
 
-  const resolvedTargets = resolveTopLevelValue(targetsArgument.value, env, state, file);
+  const resolvedTargets = resolveTopLevelValue(targetsArgument.value, env, state, file, context);
   const availableTargets = flattenResolvedTargets(resolvedTargets, state);
   const availableNames = availableTargets.map((target) => target.name);
   const availableByName = new Map(availableTargets.map((target) => [target.name, target]));
@@ -978,10 +1250,11 @@ function resolveTarSelectTargetsCall(callNode, env, state, file) {
   for (const argument of selectorArguments) {
     const selected = evaluateTidyselectNode(argument.value, availableNames);
     if (!selected.ok) {
-      return makeUnknown(
+      return makeContextualUnknown(
         file,
         rangeFromNode(argument.value),
-        `Static pipeline analysis is partial: could not statically resolve tar_select_targets(): ${selected.reason}`
+        `Static pipeline analysis is partial: could not statically resolve tar_select_targets(): ${selected.reason}`,
+        context
       );
     }
 
@@ -1003,7 +1276,7 @@ function resolveTarSelectTargetsCall(callNode, env, state, file) {
   );
 }
 
-function resolveTarPlanNamedTarget(callNode, argument, file) {
+function resolveTarPlanNamedTarget(callNode, argument, file, context = {}) {
   const nameNode = argument.node && argument.node.childForFieldName
     ? argument.node.childForFieldName("name")
     : null;
@@ -1011,10 +1284,11 @@ function resolveTarPlanNamedTarget(callNode, argument, file) {
   const name = (nameNode && extractTargetName(nameNode)) || argument.name || null;
 
   if (!name || !rawCommandNode) {
-    return makeUnknown(
+    return makeContextualUnknown(
       file,
       rangeFromNode(argument.node || callNode),
-      "Static pipeline analysis is partial: tar_plan() named entries must use target = command syntax"
+      "Static pipeline analysis is partial: tar_plan() named entries must use target = command syntax",
+      withTargetContext(context, name)
     );
   }
 
@@ -1027,22 +1301,31 @@ function resolveTarPlanNamedTarget(callNode, argument, file) {
   }));
 }
 
-function resolveTarPlanCall(callNode, env, state, file) {
-  addListSyntaxDiagnostics(callNode, state, file, "tar_plan()");
+function resolveTarPlanCall(callNode, env, state, file, context = {}) {
+  addListSyntaxDiagnostics(callNode, state, file, "tar_plan()", context);
 
   return makeTargetList(
-    unpackArguments(callNode).map((argument) => (
-      argument.name
-        ? resolveTarPlanNamedTarget(callNode, argument, file)
-        : resolveListItemValue(argument, env, state, file, "tar_plan()")
-    ))
+    unpackArguments(callNode).map((argument) => {
+      if (argument.name) {
+        return resolveTarPlanNamedTarget(callNode, argument, file, withTargetContext(context, argument.name));
+      }
+
+      return resolveListItemValue(
+        argument,
+        env,
+        state,
+        file,
+        "tar_plan()",
+        getPipelineArgumentContext(argument, "tar_plan()", context)
+      );
+    })
   );
 }
 
-function resolveTarQuartoCall(callNode, env, state, file, forcedName = null, forcedNameNode = null) {
+function resolveTarQuartoCall(callNode, env, state, file, forcedName = null, forcedNameNode = null, context = {}) {
   const { name, nameNode } = resolveFactoryName(callNode, forcedName, forcedNameNode);
   if (!name) {
-    return makeUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: could not statically resolve tar_quarto() name");
+    return makeContextualUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: could not statically resolve tar_quarto() name", context);
   }
 
   const pathArgument = getNamedArgument(callNode, "path") || getPositionalArgument(callNode, 1);
@@ -1085,10 +1368,10 @@ function resolveTarQuartoCall(callNode, env, state, file, forcedName = null, for
   return makeTargetObject(target);
 }
 
-function resolveTarCombineCall(callNode, env, state, file, forcedName = null, forcedNameNode = null) {
+function resolveTarCombineCall(callNode, env, state, file, forcedName = null, forcedNameNode = null, context = {}) {
   const { name, nameArgument, nameNode } = resolveFactoryName(callNode, forcedName, forcedNameNode);
   if (!name) {
-    return makeUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: could not statically resolve tar_combine() name");
+    return makeContextualUnknown(file, rangeFromNode(callNode), "Static pipeline analysis is partial: could not statically resolve tar_combine() name", context);
   }
 
   const commandArgument = getNamedArgument(callNode, "command");
@@ -1106,7 +1389,7 @@ function resolveTarCombineCall(callNode, env, state, file, forcedName = null, fo
       continue;
     }
 
-    const resolved = resolveTopLevelValue(argument.value, env, state, file);
+    const resolved = resolveTopLevelValue(argument.value, env, state, file, withTargetContext(context, name));
     for (const upstreamTarget of flattenResolvedTargets(resolved, state)) {
       externalRefs.push({
         context: "command",
@@ -1132,7 +1415,7 @@ function resolveTarCombineCall(callNode, env, state, file, forcedName = null, fo
   return makeTargetObject(target);
 }
 
-function resolvePipedTargetFactoryCall(node, env, state, file, forcedName = null, forcedNameNode = null) {
+function resolvePipedTargetFactoryCall(node, env, state, file, forcedName = null, forcedNameNode = null, context = {}) {
   if (!forcedName) {
     return null;
   }
@@ -1143,19 +1426,21 @@ function resolvePipedTargetFactoryCall(node, env, state, file, forcedName = null
   }
 
   if (!matchesCall(pipe.rhs, state.callSets.directTargetCalls)) {
-    return makeUnknown(
+    return makeContextualUnknown(
       file,
       rangeFromNode(node),
-      "Static pipeline analysis is partial: tar_assign() piped expressions must end in tar_target()/target-like factory"
+      "Static pipeline analysis is partial: tar_assign() piped expressions must end in tar_target()/target-like factory",
+      context
     );
   }
 
   const commandArgument = getNamedArgument(pipe.rhs, "command") || getPositionalArgument(pipe.rhs, 0);
   if (commandArgument && !isPlaceholderIdentifier(getArgumentValue(commandArgument.node))) {
-    return makeUnknown(
+    return makeContextualUnknown(
       file,
       rangeFromNode(commandArgument.value || pipe.rhs),
-      "Static pipeline analysis is partial: piped tar_target()/target-like factory calls must use an empty command or command = _"
+      "Static pipeline analysis is partial: piped tar_target()/target-like factory calls must use an empty command or command = _",
+      context
     );
   }
 
@@ -1167,24 +1452,25 @@ function resolvePipedTargetFactoryCall(node, env, state, file, forcedName = null
   });
 
   if (!parsed.ok) {
-    return makeUnknown(file, rangeFromNode(node), `Static pipeline analysis is partial: ${parsed.reason}`);
+    return makeContextualUnknown(file, rangeFromNode(node), `Static pipeline analysis is partial: ${parsed.reason}`, context);
   }
 
   return makeTargetObject(parsed.target);
 }
 
-function resolveTargetFactoryCall(node, env, state, file, forcedName = null, forcedNameNode = null) {
+function resolveTargetFactoryCall(node, env, state, file, forcedName = null, forcedNameNode = null, context = {}) {
   const current = unwrapNode(node);
   if (!current || current.type !== "call") {
-    const piped = resolvePipedTargetFactoryCall(current, env, state, file, forcedName, forcedNameNode);
+    const piped = resolvePipedTargetFactoryCall(current, env, state, file, forcedName, forcedNameNode, context);
     if (piped) {
       return piped;
     }
 
-    return makeUnknown(file, rangeFromNode(current || node), "Static pipeline analysis is partial: unsupported expression in pipeline");
+    return makeContextualUnknown(file, rangeFromNode(current || node), "Static pipeline analysis is partial: unsupported expression in pipeline", context);
   }
 
   if (matchesCall(current, state.callSets.directTargetCalls)) {
+    const targetNameContext = withTargetContext(context, resolveFactoryName(current, forcedName, forcedNameNode).name);
     const parsed = parseTarTargetCall(current, file, {
       nameNodeOverride: forcedNameNode,
       nameOverride: forcedName,
@@ -1192,18 +1478,18 @@ function resolveTargetFactoryCall(node, env, state, file, forcedName = null, for
     });
 
     if (!parsed.ok) {
-      return makeUnknown(file, rangeFromNode(current), `Static pipeline analysis is partial: ${parsed.reason}`);
+      return makeContextualUnknown(file, rangeFromNode(current), `Static pipeline analysis is partial: ${parsed.reason}`, targetNameContext);
     }
 
     return makeTargetObject(parsed.target);
   }
 
   if (matchesCall(current, QUARTO_CALLS)) {
-    return resolveTarQuartoCall(current, env, state, file, forcedName, forcedNameNode);
+    return resolveTarQuartoCall(current, env, state, file, forcedName, forcedNameNode, context);
   }
 
   if (matchesCall(current, COMBINE_CALLS)) {
-    return resolveTarCombineCall(current, env, state, file, forcedName, forcedNameNode);
+    return resolveTarCombineCall(current, env, state, file, forcedName, forcedNameNode, context);
   }
 
   if (matchesCall(current, MAP_CALLS)) {
@@ -1220,31 +1506,40 @@ function resolveTargetFactoryCall(node, env, state, file, forcedName = null, for
   }
 
   if (matchesCall(current, ASSIGN_CALLS)) {
-    return resolveTarAssignCall(current, env, state, file);
+    return resolveTarAssignCall(current, env, state, file, context);
   }
 
   if (matchesCall(current, SELECT_TARGETS_CALLS)) {
-    return resolveTarSelectTargetsCall(current, env, state, file);
+    return resolveTarSelectTargetsCall(current, env, state, file, context);
   }
 
   if (matchesCall(current, PLAN_CALLS)) {
-    return resolveTarPlanCall(current, env, state, file);
+    return resolveTarPlanCall(current, env, state, file, context);
   }
 
   if (matchesCall(current, new Set(["list"]))) {
-    addListSyntaxDiagnostics(current, state, file);
-    return makeTargetList(unpackArguments(current).map((argument) => resolveListItemValue(argument, env, state, file)));
+    addListSyntaxDiagnostics(current, state, file, "list()", context);
+    return makeTargetList(unpackArguments(current).map((argument) => (
+      resolveListItemValue(
+        argument,
+        env,
+        state,
+        file,
+        "list()",
+        getPipelineArgumentContext(argument, "list()", context)
+      )
+    )));
   }
 
-  return makeUnknown(file, rangeFromNode(current), "Static pipeline analysis is partial: unsupported expression in pipeline");
+  return makeContextualUnknown(file, rangeFromNode(current), "Static pipeline analysis is partial: unsupported expression in pipeline", context);
 }
 
-function resolveTopLevelValue(node, env, state, file) {
+function resolveTopLevelValue(node, env, state, file, context = {}) {
   // Interpret only the small subset of R constructs that can safely build the
   // pipeline shape without evaluating user code.
   const current = unwrapNode(node);
   if (!current) {
-    return makeUnknown(file, zeroRange(), "Static pipeline analysis is partial: unsupported empty expression");
+    return makeContextualUnknown(file, zeroRange(), "Static pipeline analysis is partial: unsupported empty expression", context);
   }
 
   if (current.type === "identifier") {
@@ -1252,7 +1547,7 @@ function resolveTopLevelValue(node, env, state, file) {
       return makeTargetList([]);
     }
 
-    return env.get(current.text) || makeUnknown(file, rangeFromNode(current), `Static pipeline analysis is partial: unresolved symbol '${current.text}'`);
+    return env.get(current.text) || makeContextualUnknown(file, rangeFromNode(current), `Static pipeline analysis is partial: unresolved symbol '${current.text}'`, context);
   }
 
   if (current.type === "null") {
@@ -1260,11 +1555,11 @@ function resolveTopLevelValue(node, env, state, file) {
   }
 
   if (current.type === "subset2" || current.type === "subset") {
-    return resolveSubsetValue(current, env, state, file);
+    return resolveSubsetValue(current, env, state, file, context);
   }
 
   if (current.type !== "call") {
-    return makeUnknown(file, rangeFromNode(current), "Static pipeline analysis is partial: unsupported expression in pipeline");
+    return makeContextualUnknown(file, rangeFromNode(current), "Static pipeline analysis is partial: unsupported expression in pipeline", context);
   }
 
   const staticTable = resolveStaticTableExpression(current, env);
@@ -1272,7 +1567,7 @@ function resolveTopLevelValue(node, env, state, file) {
     return makeStaticTable(staticTable.rows);
   }
 
-  return resolveTargetFactoryCall(current, env, state, file);
+  return resolveTargetFactoryCall(current, env, state, file, null, null, context);
 }
 
 function flattenResolvedTargets(value, state) {
@@ -1621,7 +1916,28 @@ function executeFile(file, state) {
 
   for (const statement of analysis.statements) {
     if (statement.kind === "assignment") {
-      const resolved = resolveTopLevelValue(statement.valueNode, env, state, normalizedFile);
+      const resolved = resolveTopLevelValue(
+        statement.valueNode,
+        env,
+        state,
+        normalizedFile,
+        getAssignmentPipelineContext(statement.valueNode, statement.symbol)
+      );
+      env.set(statement.symbol, resolved);
+      if (isPipelineLikeValue(resolved)) {
+        lastValue = resolved;
+      }
+      continue;
+    }
+
+    if (statement.kind === "malformedPipelineAssignment") {
+      const resolved = resolveMalformedPipelineCall(
+        statement,
+        env,
+        state,
+        normalizedFile,
+        withSubpipelineContext({}, statement.symbol)
+      );
       env.set(statement.symbol, resolved);
       if (isPipelineLikeValue(resolved)) {
         lastValue = resolved;

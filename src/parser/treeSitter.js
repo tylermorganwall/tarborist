@@ -8,6 +8,19 @@ const TreeSitter = require("web-tree-sitter");
 let parser;
 let parserReady;
 
+function resetParser() {
+  if (parser && typeof parser.delete === "function") {
+    try {
+      parser.delete();
+    } catch (_error) {
+      // Best-effort cleanup only. The next ensureParserReady() call will rebuild.
+    }
+  }
+
+  parser = null;
+  parserReady = null;
+}
+
 function summarizeText(text) {
   const source = typeof text === "string" ? text : "";
   const lineCount = source ? source.split(/\r?\n/).length : 0;
@@ -86,12 +99,18 @@ function parseText(text, context = {}) {
   try {
     return getParser().parse(text);
   } catch (error) {
-    throw buildParseError(error, text, context);
+    const parserWasInitialized = Boolean(parser);
+    resetParser();
+    throw buildParseError(error, text, {
+      ...context,
+      parserReset: parserWasInitialized
+    });
   }
 }
 
 module.exports = {
   ensureParserReady,
   getParser,
-  parseText
+  parseText,
+  resetParser
 };
