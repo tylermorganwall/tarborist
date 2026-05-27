@@ -13,7 +13,7 @@ const { containsPosition } = require("../util/ranges");
 const { findCompletionRegion, findGeneratorAtPosition, findTargetAtPosition } = require("./shared");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MAX_INLINE_DIRECT_DOWNSTREAM = 5;
+const MAX_INLINE_DIRECT_TARGETS = 5;
 const MAX_INLINE_INVALIDATION_PATHS = 3;
 
 function createMarkdown() {
@@ -44,26 +44,33 @@ function commandLinkForTarget(target) {
   return `[\`${target.name}\`](command:tarborist.openLocation?${encoded})`;
 }
 
-function buildDownstreamDepthMap(graph, rootTargetName) {
-  const adjacency = graph.upstreamToDownstream || new Map();
+function buildRelatedDepthMap(adjacency, rootTargetName) {
   const depths = new Map([[rootTargetName, 0]]);
   const queue = [rootTargetName];
 
   while (queue.length) {
     const current = queue.shift();
     const currentDepth = depths.get(current) || 0;
-    for (const downstream of adjacency.get(current) || []) {
-      if (depths.has(downstream)) {
+    for (const relatedTarget of adjacency.get(current) || []) {
+      if (depths.has(relatedTarget)) {
         continue;
       }
 
-      depths.set(downstream, currentDepth + 1);
-      queue.push(downstream);
+      depths.set(relatedTarget, currentDepth + 1);
+      queue.push(relatedTarget);
     }
   }
 
   depths.delete(rootTargetName);
   return depths;
+}
+
+function buildDownstreamDepthMap(graph, rootTargetName) {
+  return buildRelatedDepthMap(graph.upstreamToDownstream || new Map(), rootTargetName);
+}
+
+function buildUpstreamDepthMap(graph, rootTargetName) {
+  return buildRelatedDepthMap(graph.downstreamToUpstream || new Map(), rootTargetName);
 }
 
 function formatBindings(bindings) {
@@ -77,10 +84,9 @@ function formatBindings(bindings) {
     .join("\n");
 }
 
-function formatTargetLinks(index, targetNames) {
-  const targets = getHoverTargets(index);
-  const links = targetNames
-    .map((targetName) => commandLinkForTarget(targets.get(targetName)))
+function formatTargetObjectLinks(targets) {
+  const links = targets
+    .map((target) => commandLinkForTarget(target))
     .filter(Boolean);
 
   return links.length ? links.join(", ") : "`None`";
@@ -113,8 +119,8 @@ function commandLinkForTargetList(index, label, title, targets, root, options = 
     return `\`${label}\``;
   }
 
-  // Large downstream sets are easier to inspect through a quick-pick than by
-  // dumping every target directly into the hover.
+  // Large related target sets are easier to inspect through a quick-pick than
+  // by dumping every target directly into the hover.
   const orderedTargets = sortTargetListTargets(targets, options);
   const payload = {
     targets: orderedTargets.map((target) => {
@@ -140,25 +146,41 @@ function commandLinkForTargetList(index, label, title, targets, root, options = 
   return `[\`${label}\`](command:tarborist.showTargetList?${encoded})`;
 }
 
-function buildDownstreamSummaryValue(index, root, targetName, directDownstreamTargets, furtherDownstreamTargets) {
-  if (!directDownstreamTargets.length) {
+function buildRelatedSummaryValue(index, root, targetName, directTargets, furtherTargets, options) {
+  if (!directTargets.length) {
     return "`0`";
   }
 
-  const directValue = directDownstreamTargets.length <= MAX_INLINE_DIRECT_DOWNSTREAM
-    ? directDownstreamTargets.map((downstreamTarget) => commandLinkForTarget(downstreamTarget) || `\`${downstreamTarget.name}\``).join(", ")
-    : commandLinkForTargetList(index, `(${directDownstreamTargets.length})`, `Direct downstream of ${targetName}`, directDownstreamTargets, root, {
+  const directValue = directTargets.length <= MAX_INLINE_DIRECT_TARGETS
+    ? formatTargetObjectLinks(directTargets)
+    : commandLinkForTargetList(index, `(${directTargets.length})`, `${options.directTitle} of ${targetName}`, directTargets, root, {
       direct: true
     });
 
-  if (!furtherDownstreamTargets.length) {
+  if (!furtherTargets.length) {
     return directValue;
   }
 
-  const indirectDepths = buildDownstreamDepthMap(getHoverGraph(index), targetName);
-  return `${directValue}, ${commandLinkForTargetList(index, `(+${furtherDownstreamTargets.length} further)`, `Further downstream of ${targetName}`, furtherDownstreamTargets, root, {
+  const indirectDepths = options.buildDepthMap(getHoverGraph(index), targetName);
+  return `${directValue}, ${commandLinkForTargetList(index, `(+${furtherTargets.length} further)`, `${options.furtherTitle} of ${targetName}`, furtherTargets, root, {
     indirectDepths
   })}`;
+}
+
+function buildDownstreamSummaryValue(index, root, targetName, directDownstreamTargets, furtherDownstreamTargets) {
+  return buildRelatedSummaryValue(index, root, targetName, directDownstreamTargets, furtherDownstreamTargets, {
+    buildDepthMap: buildDownstreamDepthMap,
+    directTitle: "Direct downstream",
+    furtherTitle: "Further downstream"
+  });
+}
+
+function buildUpstreamSummaryValue(index, root, targetName, directUpstreamTargets, furtherUpstreamTargets) {
+  return buildRelatedSummaryValue(index, root, targetName, directUpstreamTargets, furtherUpstreamTargets, {
+    buildDepthMap: buildUpstreamDepthMap,
+    directTitle: "Direct upstream",
+    furtherTitle: "Further upstream"
+  });
 }
 
 function buildProviderParseContext(document, position, phase) {
@@ -544,7 +566,17 @@ function buildTargetHover(index, root, target, invalidationState = null) {
   const hoverTargets = getHoverTargets(index);
   const hoverGraph = getHoverGraph(index);
   const disabledInFinalPipeline = !index.targets.has(target.name);
-  const upstream = [...(hoverGraph.downstreamToUpstream.get(target.name) || new Set())].sort();
+  const directUpstreamTargets = [...(hoverGraph.downstreamToUpstream.get(target.name) || new Set())]
+    .sort()
+    .map((targetName) => hoverTargets.get(targetName))
+    .filter(Boolean);
+  const directUpstreamNames = new Set(directUpstreamTargets.map((upstreamTarget) => upstreamTarget.name));
+  const upstreamTargets = [...(hoverGraph.ancestors.get(target.name) || new Set())]
+    .sort()
+    .map((targetName) => hoverTargets.get(targetName))
+    .filter(Boolean);
+  const furtherUpstreamTargets = upstreamTargets.filter((upstreamTarget) => !directUpstreamNames.has(upstreamTarget.name));
+  const upstreamSummaryValue = buildUpstreamSummaryValue(index, root, target.name, directUpstreamTargets, furtherUpstreamTargets);
   const directDownstreamTargets = [...(hoverGraph.upstreamToDownstream.get(target.name) || new Set())]
     .sort()
     .map((targetName) => hoverTargets.get(targetName))
@@ -596,7 +628,7 @@ function buildTargetHover(index, root, target, invalidationState = null) {
       },
       {
         label: "Upstream",
-        value: formatTargetLinks(index, upstream)
+        value: upstreamSummaryValue
       },
       {
         label: "Downstream",

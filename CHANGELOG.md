@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## [0.16.0] - 2026-05-27
+
+### Changed
+
+- Target hovers now show indirect upstream target counts with a quick-pick link, matching the existing further-downstream navigation.
+
 ## [0.15.1] - 2026-05-22
 
 ### Changed

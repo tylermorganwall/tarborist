@@ -540,6 +540,46 @@ test("hover shows downstream as direct links plus a further-children quick-pick 
   assert.match(markdown, /\| \*\*Downstream\*\* \| .*`y`.*`z`.*\[`\(\+2 further\)`\]\(command:tarborist\.showTargetList\?.*\|/);
 });
 
+test("hover shows upstream as direct links plus a further-parents quick-pick link", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("deep_downstream_hover");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  const lineIndex = text.split("\n").findIndex((line) => line.includes("tar_target(d, c + 1)"));
+  const position = { line: lineIndex, character: text.split("\n")[lineIndex].indexOf("(d") + 1 };
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+  const markdown = hover.contents[0].value;
+
+  assert.match(markdown, /\| \*\*Upstream\*\* \| .*`c`.*\[`\(\+2 further\)`\]\(command:tarborist\.showTargetList\?.*\|/);
+
+  const upstreamRowStart = markdown.indexOf("| **Upstream** |");
+  const commandPrefix = "command:tarborist.showTargetList?";
+  const commandStart = markdown.indexOf(commandPrefix, upstreamRowStart);
+  assert.notEqual(commandStart, -1, "expected a further-upstream quick-pick command link in the hover");
+
+  const payloadStart = commandStart + commandPrefix.length;
+  const payloadEnd = markdown.indexOf(") |", payloadStart);
+  const [payload] = JSON.parse(decodeURIComponent(markdown.slice(payloadStart, payloadEnd)));
+
+  assert.equal(payload.title, "Further upstream of d");
+  assert.equal(payload.targets[0].name, "b");
+  assert.equal(payload.targets[0].label, "[+1] b");
+  assert.match(payload.targets[0].description, /^_targets\.R:3$/);
+  assert.equal(payload.targets[1].name, "a");
+  assert.equal(payload.targets[1].label, "[+2] a");
+  assert.match(payload.targets[1].description, /^_targets\.R:2$/);
+});
+
 test("further-downstream quick-pick payload includes relative update age after the location", async () => {
   const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
   const { index, root } = buildIndex("meta_downstream_hover");
