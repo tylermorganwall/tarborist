@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## [0.17.0] - 2026-05-30
+
+### Fixed
+
+- Hovering non-target text now returns no hover instead of surfacing Positron `Invalid argument` errors from copied editor positions.
+- Completion and hover providers now recover after Tree-sitter parser resets and avoid noisy parser-unavailable errors while the parser runtime is being rebuilt.
+- Fatal Tree-sitter WebAssembly runtime failures now trigger a fresh runtime reload and retry, reducing cases where indexing required an extension restart.
+- AST wrapper handling now avoids hanging on malformed empty expression nodes.
+
 ## [0.16.0] - 2026-05-27
 
 ### Changed

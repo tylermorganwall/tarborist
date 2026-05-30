@@ -5,7 +5,7 @@
 const vscode = require("vscode");
 
 const { findNodeAt, matchesCall, unpackArguments } = require("../parser/ast");
-const { parseText } = require("../parser/treeSitter");
+const { ensureParserReady, isParserUnavailableError, parseText } = require("../parser/treeSitter");
 const { getTargetLocation } = require("../targetLocation");
 const { formatTimestampInTimeZone } = require("../index/targetsMeta");
 const { formatLocation, normalizeFile } = require("../util/paths");
@@ -184,15 +184,29 @@ function buildUpstreamSummaryValue(index, root, targetName, directUpstreamTarget
 }
 
 function buildProviderParseContext(document, position, phase) {
-  const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z.][A-Za-z0-9._]*/);
-  const lineText = document.lineAt(position.line).text;
+  let lineText = "";
+  let word = "";
+
+  try {
+    lineText = document.lineAt(position.line).text;
+  } catch (_error) {
+    lineText = "";
+  }
+
+  try {
+    const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z.][A-Za-z0-9._]*/);
+    word = wordRange ? document.getText(wordRange) : "";
+  } catch (_error) {
+    word = "";
+  }
+
   return {
     character: position.character,
     file: document.uri.fsPath,
     line: position.line + 1,
     linePreview: lineText.trim().slice(0, 200),
     phase,
-    word: wordRange ? document.getText(wordRange) : ""
+    word
   };
 }
 
@@ -767,14 +781,12 @@ class TargetHoverProvider {
       const root = this.indexManager.getWorkspaceRoot(document.uri);
       const invalidationState = this.getInvalidationState(document.uri, root);
       const file = normalizeFile(document.uri.fsPath);
-      const point = {
-        character: position.character,
-        line: position.line
-      };
-
-      return this.tryBuildHover(index, root, file, document, point, invalidationState);
+      await ensureParserReady();
+      return await this.tryBuildHover(index, root, file, document, position, invalidationState);
     } catch (error) {
-      this.indexManager.logFailure("Hover provider failed", error, buildProviderParseContext(document, position, "hoverProvider"));
+      if (!isParserUnavailableError(error) && this.indexManager && typeof this.indexManager.logFailure === "function") {
+        this.indexManager.logFailure("Hover provider failed", error, buildProviderParseContext(document, position, "hoverProvider"));
+      }
       return null;
     }
   }

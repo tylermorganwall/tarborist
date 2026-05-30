@@ -3,12 +3,46 @@
 // Singleton WASM-backed Tree-sitter R parser used by all indexing passes.
 const path = require("path");
 
-const TreeSitter = require("web-tree-sitter");
-
+let TreeSitter;
+let language;
 let parser;
 let parserReady;
 
-function resetParser() {
+function loadTreeSitterRuntime() {
+  if (!TreeSitter) {
+    TreeSitter = require("web-tree-sitter");
+  }
+
+  return TreeSitter;
+}
+
+function resetTreeSitterRuntime() {
+  try {
+    delete require.cache[require.resolve("web-tree-sitter")];
+  } catch (_error) {
+    // If the module cannot be resolved, the next require() will surface it.
+  }
+
+  TreeSitter = null;
+  language = null;
+}
+
+function isTreeSitterRuntimeError(error) {
+  const message = String(error && error.message ? error.message : error);
+  return error instanceof WebAssembly.RuntimeError ||
+    /Aborted\(/.test(message) ||
+    /memory access out of bounds/i.test(message) ||
+    /table index is out of bounds/i.test(message);
+}
+
+function isParserUnavailableError(error) {
+  const message = String(error && error.message ? error.message : error);
+  return isTreeSitterRuntimeError(error) ||
+    /Tree-sitter parser is not initialized/i.test(message) ||
+    /cannot construct a Parser before calling `init\(\)`/i.test(message);
+}
+
+function resetParser(options = {}) {
   if (parser && typeof parser.delete === "function") {
     try {
       parser.delete();
@@ -19,6 +53,11 @@ function resetParser() {
 
   parser = null;
   parserReady = null;
+  language = null;
+
+  if (options.reloadRuntime) {
+    resetTreeSitterRuntime();
+  }
 }
 
 function summarizeText(text) {
@@ -68,18 +107,40 @@ async function ensureParserReady() {
   }
 
   if (!parserReady) {
-    parserReady = (async () => {
-      await TreeSitter.Parser.init();
+    const initializeParser = async () => {
+      const runtime = loadTreeSitterRuntime();
+      await runtime.Parser.init();
 
       // Load the compiled R grammar once and reuse the parser across files.
       const grammarRoot = path.dirname(require.resolve("@davisvaughan/tree-sitter-r/package.json"));
-      const language = await TreeSitter.Language.load(path.join(grammarRoot, "tree-sitter-r.wasm"));
+      language = await runtime.Language.load(path.join(grammarRoot, "tree-sitter-r.wasm"));
 
-      parser = new TreeSitter.Parser();
+      parser = new runtime.Parser();
       parser.setLanguage(language);
       return parser;
+    };
+
+    parserReady = (async () => {
+      try {
+        return await initializeParser();
+      } catch (error) {
+        if (!isTreeSitterRuntimeError(error)) {
+          throw error;
+        }
+
+        resetParser({
+          reloadRuntime: true
+        });
+        return initializeParser();
+      }
     })().catch((error) => {
-      parserReady = null;
+      if (isTreeSitterRuntimeError(error)) {
+        resetParser({
+          reloadRuntime: true
+        });
+      } else {
+        parserReady = null;
+      }
       throw error;
     });
   }
@@ -100,7 +161,9 @@ function parseText(text, context = {}) {
     return getParser().parse(text);
   } catch (error) {
     const parserWasInitialized = Boolean(parser);
-    resetParser();
+    resetParser({
+      reloadRuntime: isTreeSitterRuntimeError(error)
+    });
     throw buildParseError(error, text, {
       ...context,
       parserReset: parserWasInitialized
@@ -111,6 +174,8 @@ function parseText(text, context = {}) {
 module.exports = {
   ensureParserReady,
   getParser,
+  isParserUnavailableError,
+  isTreeSitterRuntimeError,
   parseText,
   resetParser
 };

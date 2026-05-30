@@ -13,7 +13,7 @@ const {
   isStringNode,
   matchesCall
 } = require("../parser/ast");
-const { parseText } = require("../parser/treeSitter");
+const { ensureParserReady, isParserUnavailableError, parseText } = require("../parser/treeSitter");
 const {
   COMBINE_CALLS,
   createDirectTargetCalls,
@@ -74,15 +74,29 @@ function extractPrefix(document, position) {
 }
 
 function buildProviderParseContext(document, position, phase) {
-  const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z.][A-Za-z0-9._]*/);
-  const lineText = document.lineAt(position.line).text;
+  let lineText = "";
+  let word = "";
+
+  try {
+    lineText = document.lineAt(position.line).text;
+  } catch (_error) {
+    lineText = "";
+  }
+
+  try {
+    const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z.][A-Za-z0-9._]*/);
+    word = wordRange ? document.getText(wordRange) : "";
+  } catch (_error) {
+    word = "";
+  }
+
   return {
     character: position.character,
     file: document.uri.fsPath,
     line: position.line + 1,
     linePreview: lineText.trim().slice(0, 200),
     phase,
-    word: wordRange ? document.getText(wordRange) : ""
+    word
   };
 }
 
@@ -437,6 +451,8 @@ class TargetCompletionProvider {
         return [];
       }
 
+      await ensureParserReady();
+
       const file = normalizeFile(document.uri.fsPath);
       const region = resolveLiveCompletionRegion(index, document, position);
       if (!region) {
@@ -525,7 +541,9 @@ class TargetCompletionProvider {
 
       return items;
     } catch (error) {
-      this.indexManager.logFailure("Completion provider failed", error, buildProviderParseContext(document, position, "completionProvider"));
+      if (!isParserUnavailableError(error) && this.indexManager && typeof this.indexManager.logFailure === "function") {
+        this.indexManager.logFailure("Completion provider failed", error, buildProviderParseContext(document, position, "completionProvider"));
+      }
       return [];
     }
   }

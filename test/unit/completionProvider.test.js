@@ -7,7 +7,7 @@ const path = require("path");
 const test = require("node:test");
 
 const { buildStaticWorkspaceIndex } = require("../../src/index/pipelineResolver");
-const { ensureParserReady } = require("../../src/parser/treeSitter");
+const { ensureParserReady, resetParser } = require("../../src/parser/treeSitter");
 
 function buildIndex(fixtureName) {
   const root = path.resolve(__dirname, "..", "fixtures", fixtureName);
@@ -20,7 +20,7 @@ function buildIndex(fixtureName) {
   };
 }
 
-function loadCompletionProviderWithMockVscode() {
+function loadCompletionProviderWithMockVscode(options = {}) {
   const mockVscode = {
     CompletionItem: class CompletionItem {
       constructor(label, kind) {
@@ -63,6 +63,10 @@ function loadCompletionProviderWithMockVscode() {
       return mockVscode;
     }
 
+    if (options.treeSitter && request === "../parser/treeSitter") {
+      return options.treeSitter;
+    }
+
     return originalLoad.call(this, request, parent, isMain);
   };
 
@@ -73,7 +77,7 @@ function loadCompletionProviderWithMockVscode() {
   }
 }
 
-function createDocument(text, filePath) {
+function createDocument(text, filePath, options = {}) {
   const lines = text.split("\n");
   return {
     lineAt(line) {
@@ -88,6 +92,10 @@ function createDocument(text, filePath) {
       return line.slice(range.start.character, range.end.character);
     },
     getWordRangeAtPosition(position, regex) {
+      if (options.throwOnWordRange) {
+        throw new Error("Invalid argument");
+      }
+
       const lineText = lines[position.line] || "";
       const matcher = new RegExp(regex.source, "g");
       let match = matcher.exec(lineText);
@@ -115,6 +123,103 @@ function createDocument(text, filePath) {
 
 test.before(async () => {
   await ensureParserReady();
+});
+
+test("completion live parsing reinitializes the parser after reset", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const { index, root } = buildIndex("completion_live_region");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8").replace(
+    "tar_target(lambda, 3)",
+    "tar_target(lambda, 3 + alp)"
+  );
+  const lines = text.split("\n");
+  const lineIndex = lines.findIndex((line) => line.includes("tar_target(lambda, 3 + alp)"));
+  const position = {
+    character: lines[lineIndex].indexOf("alp") + 3,
+    line: lineIndex
+  };
+  const document = createDocument(text, filePath);
+  const provider = new TargetCompletionProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    },
+    logFailure() {}
+  });
+
+  resetParser();
+  const items = await provider.provideCompletionItems(document, position);
+
+  assert.ok(items.some((item) => item.label === "alpha"));
+});
+
+test("completion provider logging tolerates invalid word ranges", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const document = createDocument("x <- 1\n", "/tmp/_targets.R", {
+    throwOnWordRange: true
+  });
+  let loggedDetails = null;
+  const provider = new TargetCompletionProvider({
+    async getIndexForUri() {
+      throw new Error("boom");
+    },
+    logFailure(_label, _error, details) {
+      loggedDetails = details;
+    }
+  });
+
+  const items = await provider.provideCompletionItems(document, {
+    character: 0,
+    line: 0
+  });
+
+  assert.deepEqual(items, []);
+  assert.equal(loggedDetails.word, "");
+  assert.equal(loggedDetails.linePreview, "x <- 1");
+});
+
+test("completion provider suppresses parser-unavailable noise", async () => {
+  const unavailableError = new Error("Tree-sitter parser is not initialized. Call ensureParserReady() before parsing.");
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode({
+    treeSitter: {
+      async ensureParserReady() {
+        throw unavailableError;
+      },
+      isParserUnavailableError(error) {
+        return error === unavailableError;
+      },
+      parseText() {
+        throw unavailableError;
+      }
+    }
+  });
+  const { index, root } = buildIndex("completion_live_region");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  let logged = false;
+  const provider = new TargetCompletionProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    },
+    logFailure() {
+      logged = true;
+    }
+  });
+
+  const items = await provider.provideCompletionItems(document, {
+    character: 0,
+    line: 0
+  });
+
+  assert.deepEqual(items, []);
+  assert.equal(logged, false);
 });
 
 test("tar_map template completions wait for a three-character prefix", async () => {

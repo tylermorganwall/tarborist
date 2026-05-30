@@ -7,7 +7,7 @@ const path = require("path");
 const test = require("node:test");
 
 const { buildStaticWorkspaceIndex } = require("../../src/index/pipelineResolver");
-const { ensureParserReady } = require("../../src/parser/treeSitter");
+const { ensureParserReady, resetParser } = require("../../src/parser/treeSitter");
 
 function buildIndex(fixtureName) {
   const root = path.resolve(__dirname, "..", "fixtures", fixtureName);
@@ -20,7 +20,7 @@ function buildIndex(fixtureName) {
   };
 }
 
-function loadHoverProviderWithMockVscode(configValues = { timeZone: "UTC" }) {
+function loadHoverProviderWithMockVscode(configValues = { timeZone: "UTC" }, options = {}) {
   const mockVscode = {
     Hover: class Hover {
       constructor(contents) {
@@ -60,6 +60,10 @@ function loadHoverProviderWithMockVscode(configValues = { timeZone: "UTC" }) {
       return mockVscode;
     }
 
+    if (options.treeSitter && request === "../parser/treeSitter") {
+      return options.treeSitter;
+    }
+
     return originalLoad.call(this, request, parent, isMain);
   };
 
@@ -70,7 +74,7 @@ function loadHoverProviderWithMockVscode(configValues = { timeZone: "UTC" }) {
   }
 }
 
-function createDocument(text, filePath) {
+function createDocument(text, filePath, options = {}) {
   const lines = text.split("\n");
   const lineOffsets = [];
   let offset = 0;
@@ -114,6 +118,14 @@ function createDocument(text, filePath) {
       return text.slice(offsetAt(range.start), offsetAt(range.end));
     },
     getWordRangeAtPosition(position, regex) {
+      if (options.throwOnWordRange) {
+        throw new Error("Invalid argument");
+      }
+
+      if (options.requiredPositionClass && !(position instanceof options.requiredPositionClass)) {
+        throw new Error("Invalid argument");
+      }
+
       const lineText = lines[position.line] || "";
       const matcher = new RegExp(regex.source, "g");
       let match = matcher.exec(lineText);
@@ -139,6 +151,135 @@ function createDocument(text, filePath) {
 
 test.before(async () => {
   await ensureParserReady();
+});
+
+test("hover live parsing reinitializes the parser after reset", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("direct");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const lines = text.split("\n");
+  const document = createDocument(text, filePath);
+  let failures = 0;
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    },
+    logFailure() {
+      failures += 1;
+    }
+  });
+  const lineIndex = lines.findIndex((line) => line.includes("tar_target(a, 1)"));
+
+  resetParser();
+  const hover = await provider.provideHover(document, {
+    character: lines[lineIndex].indexOf("tar_target"),
+    line: lineIndex
+  });
+
+  assert.equal(hover, null);
+  assert.equal(failures, 0);
+});
+
+test("hover provider logging tolerates invalid word ranges", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const document = createDocument("x <- 1\n", "/tmp/_targets.R", {
+    throwOnWordRange: true
+  });
+  let loggedDetails = null;
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      throw new Error("boom");
+    },
+    logFailure(_label, _error, details) {
+      loggedDetails = details;
+    }
+  });
+
+  const hover = await provider.provideHover(document, {
+    character: 0,
+    line: 0
+  });
+
+  assert.equal(hover, null);
+  assert.equal(loggedDetails.word, "");
+  assert.equal(loggedDetails.linePreview, "x <- 1");
+});
+
+test("hover provider suppresses parser-unavailable noise", async () => {
+  const unavailableError = new Error("Tree-sitter parser is not initialized. Call ensureParserReady() before parsing.");
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode({ timeZone: "UTC" }, {
+    treeSitter: {
+      async ensureParserReady() {
+        throw unavailableError;
+      },
+      isParserUnavailableError(error) {
+        return error === unavailableError;
+      },
+      parseText() {
+        throw unavailableError;
+      }
+    }
+  });
+  const { index, root } = buildIndex("direct");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const document = createDocument(text, filePath);
+  let logged = false;
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    },
+    logFailure() {
+      logged = true;
+    }
+  });
+
+  const hover = await provider.provideHover(document, {
+    character: 0,
+    line: 0
+  });
+
+  assert.equal(hover, null);
+  assert.equal(logged, false);
+});
+
+test("hovering a non-target uses the editor position for word lookup", async () => {
+  class EditorPosition {
+    constructor(line, character) {
+      this.character = character;
+      this.line = line;
+    }
+  }
+
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("direct");
+  const filePath = path.join(root, "_targets.R");
+  const text = fs.readFileSync(filePath, "utf8");
+  const lines = text.split("\n");
+  const document = createDocument(text, filePath, {
+    requiredPositionClass: EditorPosition
+  });
+  const lineIndex = lines.findIndex((line) => line.includes("tar_target(a, 1)"));
+  const position = new EditorPosition(lineIndex, lines[lineIndex].indexOf("tar_target"));
+  const provider = new TargetHoverProvider({
+    async getIndexForUri() {
+      return index;
+    },
+    getWorkspaceRoot() {
+      return root;
+    }
+  });
+
+  const hover = await provider.provideHover(document, position);
+
+  assert.equal(hover, null);
 });
 
 test("hovering a tar_combine() alias outside target code uses the target hover", async () => {

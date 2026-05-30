@@ -12,7 +12,17 @@ function unwrapNode(node) {
   // Many R expressions are wrapped in expression/parenthesis nodes that are not
   // meaningful for static analysis, so normalize them away up front.
   while (current && (current.type === "parenthesized_expression" || current.type === "expression")) {
-    current = current.namedChildren && current.namedChildren.length ? current.namedChildren[current.namedChildren.length - 1] : current;
+    const children = current.namedChildren || [];
+    if (!children.length) {
+      return current;
+    }
+
+    const next = children[children.length - 1];
+    if (next === current) {
+      return current;
+    }
+
+    current = next;
   }
 
   if (current && current.type === "braced_expression" && current.namedChildren && current.namedChildren.length) {
