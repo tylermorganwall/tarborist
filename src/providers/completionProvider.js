@@ -6,18 +6,21 @@ const vscode = require("vscode");
 const {
   findAncestor,
   findNodeAt,
+  getArgumentValue,
   getNamedArgument,
   getPositionalArgument,
   getShortCallName,
   isCommentNode,
   isStringNode,
-  matchesCall
+  matchesCall,
+  unpackArguments
 } = require("../parser/ast");
-const { ensureParserReady, isParserUnavailableError, parseText } = require("../parser/treeSitter");
+const { isParserUnavailableError, parseText, runParserOperation } = require("../parser/treeSitter");
 const {
   COMBINE_CALLS,
   createDirectTargetCalls,
   MAP_CALLS,
+  PLAN_CALLS,
   QUARTO_CALLS,
   TARGET_LOAD_CALLS,
   TARGET_LOAD_RAW_CALLS,
@@ -28,7 +31,7 @@ const { extractTargetName } = require("../index/targetFactories");
 const { formatLocation, normalizeFile } = require("../util/paths");
 const { comparePositions, containsPosition, rangeFromNode } = require("../util/ranges");
 const { toVsCodeRange } = require("../util/vscode");
-const { findCompletionRegion } = require("./shared");
+const { findCompletionRegion, isDocumentCurrent, isRequestCurrent } = require("./shared");
 const TAR_MAP_TEMPLATE_COMPLETION_MIN_PREFIX = 3;
 const TARGET_COMPLETION_MIN_PREFIX = 3;
 const TRIGGER_KIND_INVOKE = 0;
@@ -174,9 +177,8 @@ function findCallArgumentContext(node, position, callNames) {
   };
 }
 
-function determineInsertContext(document, position) {
+function determineInsertContext(document, position, tree) {
   // Completions insert strings inside raw APIs and bare symbols everywhere else.
-  const tree = parseText(document.getText(), buildProviderParseContext(document, position, "completionProvider"));
   const point = {
     character: position.character,
     line: position.line
@@ -226,15 +228,16 @@ function getConfiguredDirectTargetCalls() {
 }
 
 function getFactoryArguments(callNode) {
+  const preserveValue = (argument) => argument && { ...argument, value: getArgumentValue(argument.node) };
   const explicitNameArgument = getNamedArgument(callNode, "name");
   const positionalZero = getPositionalArgument(callNode, 0);
   const positionalOne = getPositionalArgument(callNode, 1);
   const hasImplicitName = !explicitNameArgument && Boolean(positionalOne);
 
   return {
-    commandArgument: getNamedArgument(callNode, "command") || (hasImplicitName ? positionalOne : positionalZero),
+    commandArgument: preserveValue(getNamedArgument(callNode, "command") || (hasImplicitName ? positionalOne : positionalZero)),
     explicitNameArgument: explicitNameArgument || (hasImplicitName ? positionalZero : null),
-    patternArgument: getNamedArgument(callNode, "pattern")
+    patternArgument: preserveValue(getNamedArgument(callNode, "pattern"))
   };
 }
 
@@ -309,18 +312,17 @@ function buildLiveRegionFromIndexedMatch(index, file, liveRange, kind, targetNam
   };
 }
 
-function resolveLiveCompletionRegion(index, document, position) {
+function resolveLiveCompletionRegion(index, document, position, tree) {
   const file = normalizeFile(document.uri.fsPath);
   const point = {
     character: position.character,
     line: position.line
   };
   const indexedRegion = findCompletionRegion(index, file, point);
-  if (indexedRegion) {
+  if (indexedRegion && isDocumentCurrent(index, document)) {
     return indexedRegion;
   }
 
-  const tree = parseText(document.getText(), buildProviderParseContext(document, position, "completionProvider"));
   const node = findNodeAt(tree.rootNode, point);
   if (!node || isCommentNode(node)) {
     return null;
@@ -332,10 +334,20 @@ function resolveLiveCompletionRegion(index, document, position) {
       return false;
     }
 
-    return matchesCall(candidate, directTargetCalls) || matchesCall(candidate, QUARTO_CALLS) || matchesCall(candidate, COMBINE_CALLS);
+    return matchesCall(candidate, directTargetCalls) || matchesCall(candidate, QUARTO_CALLS) || matchesCall(candidate, COMBINE_CALLS) || matchesCall(candidate, PLAN_CALLS);
   });
 
   if (!factoryCall) {
+    return null;
+  }
+
+  if (matchesCall(factoryCall, PLAN_CALLS)) {
+    for (const argument of unpackArguments(factoryCall)) {
+      const value = getArgumentValue(argument.node);
+      if (argument.name && value && containsPosition(rangeFromNode(value), point)) {
+        return buildLiveRegionFromIndexedMatch(index, file, rangeFromNode(value), "command", argument.name, false);
+      }
+    }
     return null;
   }
 
@@ -442,110 +454,128 @@ function buildTemplateCompletionItems(index, region, options) {
 class TargetCompletionProvider {
   constructor(indexManager) {
     this.indexManager = indexManager;
+    this.completionDetails = new WeakMap();
   }
 
   async provideCompletionItems(document, position, token, context = { triggerKind: TRIGGER_KIND_INVOKE }) {
+    const text = document.getText();
     try {
       const index = await this.indexManager.getIndexForUri(document.uri);
       if (!index) {
         return [];
       }
 
-      await ensureParserReady();
-
-      const file = normalizeFile(document.uri.fsPath);
-      const region = resolveLiveCompletionRegion(index, document, position);
-      if (!region) {
-        return [];
-      }
-
-      const insertContext = determineInsertContext(document, position);
-      if (!insertContext) {
-        return [];
-      }
-
-      // Prevent the user from inserting the current target, any existing
-      // descendants, and any target already known to be cyclic.
-      const completionTargets = getCompletionTargets(index);
-      const completionGraph = getCompletionGraph(index);
-      const excluded = new Set(completionGraph.cyclicTargets || []);
-      for (const targetName of region.enclosingTargets) {
-        excluded.add(targetName);
-        for (const descendant of completionGraph.descendants.get(targetName) || []) {
-          excluded.add(descendant);
+      return await runParserOperation(() => {
+        if (!isRequestCurrent(document, text, token)) {
+          return [];
         }
-      }
-
-      const distances = buildAncestorDistanceMap(completionGraph, region.enclosingTargets);
-      const prefix = extractPrefix(document, position).toLowerCase();
-      const root = this.indexManager.getWorkspaceRoot(document.uri);
-      const items = [];
-      if (shouldDelayTargetCompletions(region, prefix)) {
-        return buildIncompleteCompletionList();
-      }
-      const templateItems = buildTemplateCompletionItems(index, region, {
-        distances,
-        excluded,
-        file,
-        insertContext,
-        prefix,
-        root
-      });
-
-      items.push(...templateItems.items);
-
-      for (const target of completionTargets.values()) {
-        if (excluded.has(target.name)) {
-          continue;
+        const tree = parseText(text, buildProviderParseContext(document, position, "completionProvider"));
+        const file = normalizeFile(document.uri.fsPath);
+        const region = resolveLiveCompletionRegion(index, document, position, tree);
+        if (!region) {
+          return [];
         }
 
-        // Inside tar_map() template code, sibling mapped targets are completed by
-        // their template names rather than by the generated names from each row.
-        if (templateItems.coveredGeneratedTargets.has(target.name)) {
-          continue;
+        const insertContext = determineInsertContext(document, position, tree);
+        if (!insertContext) {
+          return [];
         }
 
-        const prefixScore = prefixScoreForName(target.name, prefix);
-        const sameFileScore = target.file === file ? 0 : 1;
-        const generatedScore = target.generated ? 1 : 0;
-        const distanceScore = distances.has(target.name) ? distances.get(target.name) : 9999;
-        const upstreamCount = (completionGraph.downstreamToUpstream.get(target.name) || new Set()).size;
-        const downstreamCount = (completionGraph.descendants.get(target.name) || new Set()).size;
-
-        const item = new vscode.CompletionItem(target.name, vscode.CompletionItemKind.Reference);
-        item.detail = `${target.generated ? "generated target via tar_map" : "target"} • ${formatLocation(root, target.file, target.nameRange)} • up ${upstreamCount} • down ${downstreamCount}`;
-        if (prefix && prefixScore > 1) {
-          // Let the editor keep showing valid non-matching targets like `beta`
-          // after typing `a`, while preserving natural matching for close hits.
-          item.filterText = `${prefix} ${target.name}`;
+        const prefix = extractPrefix(document, position).toLowerCase();
+        if (shouldDelayTargetCompletions(region, prefix)) {
+          return buildIncompleteCompletionList();
         }
-        item.sortText = [
-          prefixScore.toString().padStart(2, "0"),
-          sameFileScore.toString().padStart(2, "0"),
-          generatedScore.toString().padStart(2, "0"),
-          String(distanceScore).padStart(4, "0"),
-          target.name
-        ].join(":");
 
-        if (insertContext.mode === "raw") {
-          item.insertText = `"${target.name}"`;
-          if (insertContext.replaceRange) {
+        // Prevent the user from inserting the current target, any existing
+        // descendants, and any target already known to be cyclic.
+        const completionTargets = getCompletionTargets(index);
+        const completionGraph = getCompletionGraph(index);
+        const excluded = new Set(completionGraph.cyclicTargets || []);
+        for (const targetName of region.enclosingTargets) {
+          excluded.add(targetName);
+          for (const descendant of completionGraph.descendants.get(targetName) || []) {
+            excluded.add(descendant);
+          }
+        }
+
+        const distances = buildAncestorDistanceMap(completionGraph, region.enclosingTargets);
+        const root = this.indexManager.getWorkspaceRoot(document.uri);
+        const items = [];
+        const templateItems = buildTemplateCompletionItems(index, region, {
+          distances,
+          excluded,
+          file,
+          insertContext,
+          prefix,
+          root
+        });
+
+        items.push(...templateItems.items);
+
+        for (const target of completionTargets.values()) {
+          if (excluded.has(target.name)) {
+            continue;
+          }
+
+          // Inside tar_map() template code, sibling mapped targets are completed by
+          // their template names rather than by the generated names from each row.
+          if (templateItems.coveredGeneratedTargets.has(target.name)) {
+            continue;
+          }
+
+          const prefixScore = prefixScoreForName(target.name, prefix);
+          const sameFileScore = target.file === file ? 0 : 1;
+          const generatedScore = target.generated ? 1 : 0;
+          const distanceScore = distances.has(target.name) ? distances.get(target.name) : 9999;
+          const upstreamCount = (completionGraph.downstreamToUpstream.get(target.name) || new Set()).size;
+
+          const item = new vscode.CompletionItem(target.name, vscode.CompletionItemKind.Reference);
+          item.detail = `${target.generated ? "generated target via tar_map" : "target"} • ${formatLocation(root, target.file, target.nameRange)} • up ${upstreamCount}`;
+          this.completionDetails.set(item, { graph: completionGraph, name: target.name, detail: item.detail });
+          if (prefix && prefixScore > 1) {
+            // Let the editor keep showing valid non-matching targets like `beta`
+            // after typing `a`, while preserving natural matching for close hits.
+            item.filterText = `${prefix} ${target.name}`;
+          }
+          item.sortText = [
+            prefixScore.toString().padStart(2, "0"),
+            sameFileScore.toString().padStart(2, "0"),
+            generatedScore.toString().padStart(2, "0"),
+            String(distanceScore).padStart(4, "0"),
+            target.name
+          ].join(":");
+
+          if (insertContext.mode === "raw") {
+            item.insertText = `"${target.name}"`;
+            if (insertContext.replaceRange) {
+              item.range = toVsCodeRange(insertContext.replaceRange);
+            }
+          } else if (insertContext.replaceRange) {
             item.range = toVsCodeRange(insertContext.replaceRange);
           }
-        } else if (insertContext.replaceRange) {
-          item.range = toVsCodeRange(insertContext.replaceRange);
+
+          items.push(item);
         }
 
-        items.push(item);
-      }
-
-      return items;
+        return items;
+      }, {
+        onRetry: (error) => this.indexManager.logFailure?.("Retrying completion after parser failure", error)
+      });
     } catch (error) {
       if (!isParserUnavailableError(error) && this.indexManager && typeof this.indexManager.logFailure === "function") {
         this.indexManager.logFailure("Completion provider failed", error, buildProviderParseContext(document, position, "completionProvider"));
       }
       return [];
     }
+  }
+
+  resolveCompletionItem(item, token) {
+    const details = this.completionDetails.get(item);
+    if (details && !token?.isCancellationRequested) {
+      const count = details.graph.descendants.get(details.name)?.size || 0;
+      item.detail = `${details.detail} • down ${count}`;
+    }
+    return item;
   }
 }
 

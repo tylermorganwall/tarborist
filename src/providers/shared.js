@@ -1,6 +1,7 @@
 "use strict";
 
 // Shared cursor-to-index lookup helpers used by multiple editor providers.
+const { normalizeFile } = require("../util/paths");
 const { containsPosition, rangeLength } = require("../util/ranges");
 
 function pickSmallest(matches) {
@@ -45,7 +46,35 @@ function findCompletionRegion(index, file, position) {
   return pickSmallest(matches);
 }
 
+function isDocumentCurrent(index, document, text = document.getText()) {
+  if (!index || index.stale) {
+    return false;
+  }
+  const file = normalizeFile(document.uri.fsPath);
+  const indexedText = index.sourceTexts?.get(file) ?? index.files?.get(file)?.text;
+  return indexedText === undefined || indexedText === text;
+}
+
+function isRequestCurrent(document, text, token) {
+  return !document.isClosed && !token?.isCancellationRequested && document.getText() === text;
+}
+
+async function getCurrentIndexForDocument(manager, document) {
+  let index = await manager.getIndexForUri(document.uri);
+  if (index && (!isDocumentCurrent(index, document) || (manager.isIndexCurrent && !manager.isIndexCurrent(index)))) {
+    const root = manager.getPipelineRootForUri?.(document.uri);
+    if (!root || !manager.refreshWorkspace) {
+      return null;
+    }
+    index = await manager.refreshWorkspace(root);
+  }
+  return index && isDocumentCurrent(index, document) ? index : null;
+}
+
 module.exports = {
+  getCurrentIndexForDocument,
+  isDocumentCurrent,
+  isRequestCurrent,
   findCompletionRegion,
   findGeneratorAtPosition,
   findRefAtPosition,

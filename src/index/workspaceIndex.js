@@ -7,8 +7,9 @@ const path = require("path");
 const vscode = require("vscode");
 
 const { buildStaticWorkspaceIndex } = require("./pipelineResolver");
-const { ensureParserReady } = require("../parser/treeSitter");
-const { findNearestTargetsRoot, normalizeFile, relativeFile } = require("../util/paths");
+const { getParserStatistics, runParserOperation } = require("../parser/treeSitter");
+const { findNearestTargetsRoot, isPathInside, normalizeFile, relativeFile } = require("../util/paths");
+const { readTargetsMeta, readTargetsProgress } = require("./targetsMeta");
 const { toVsCodeDiagnostic } = require("../util/vscode");
 
 function diagnosticOutputLine(root, diagnostic) {
@@ -74,6 +75,18 @@ class WorkspaceIndexManager {
     this.outputChannel = outputChannel;
     this.pendingRefreshes = new Map();
     this.refreshPromises = new Map();
+    this.refreshAgain = new Map();
+    this.pendingModes = new Map();
+    this.dependenciesByRoot = new Map();
+    this.dependencyWatchers = new Map();
+    this.diagnosticsByWorkspace = new Map();
+    this.dirtyRoots = new Set();
+    this.failures = new Map();
+    this.retryTimers = new Map();
+    this.rootGenerations = new Map();
+    this.disposed = false;
+    this.indexRemovalEmitter = new vscode.EventEmitter();
+    this.onDidRemove = this.indexRemovalEmitter.event;
   }
 
   logFailure(label, error, details = {}) {
@@ -106,6 +119,7 @@ class WorkspaceIndexManager {
   async activate(context) {
     context.subscriptions.push(this.diagnosticCollection);
     context.subscriptions.push(this.indexRefreshEmitter);
+    context.subscriptions.push(this.indexRemovalEmitter);
     if (this.outputChannel) {
       context.subscriptions.push(this.outputChannel);
       this.outputChannel.appendLine("tarborist activating.");
@@ -127,15 +141,16 @@ class WorkspaceIndexManager {
     const watcherUpper = vscode.workspace.createFileSystemWatcher("**/*.R");
     const watcherLower = vscode.workspace.createFileSystemWatcher("**/*.r");
     const watcherMeta = vscode.workspace.createFileSystemWatcher("**/_targets/meta/**");
+    const watcherQuarto = vscode.workspace.createFileSystemWatcher("**/*.{qmd,QMD,Rmd,rmd}");
 
-    for (const watcher of [watcherUpper, watcherLower, watcherMeta]) {
+    for (const watcher of [watcherUpper, watcherLower, watcherMeta, watcherQuarto]) {
       watcher.onDidChange(onFileEvent, null, context.subscriptions);
       watcher.onDidCreate(onFileEvent, null, context.subscriptions);
       watcher.onDidDelete(onFileEvent, null, context.subscriptions);
       context.subscriptions.push(watcher);
     }
 
-    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(onFileEvent));
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(onDocumentLifecycle));
     context.subscriptions.push(vscode.workspace.onDidCloseTextDocument((document) => onDocumentLifecycle(document)));
     context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(onDocumentLifecycle));
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
@@ -159,27 +174,47 @@ class WorkspaceIndexManager {
   }
 
   dispose() {
-    for (const handle of this.pendingRefreshes.values()) {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    for (const handle of [...this.pendingRefreshes.values(), ...this.retryTimers.values()]) {
       clearTimeout(handle);
     }
-
-    this.pendingRefreshes.clear();
+    for (const watcher of this.dependencyWatchers.values()) {
+      watcher.dispose();
+    }
+    for (const map of [this.pendingRefreshes, this.pendingModes, this.retryTimers,
+      this.dependenciesByRoot, this.dependencyWatchers, this.indices, this.failures,
+      this.refreshPromises, this.refreshAgain, this.rootGenerations,
+      this.diagnosticsByWorkspace, this.diagnosticFilesByWorkspace]) {
+      map.clear();
+    }
+    this.dirtyRoots.clear();
     this.diagnosticCollection.dispose();
     this.indexRefreshEmitter.dispose();
+    this.indexRemovalEmitter.dispose();
   }
 
   getWorkspaceRoot(uri) {
+    if (!uri || uri.scheme !== "file") {
+      return null;
+    }
     const folder = vscode.workspace.getWorkspaceFolder(uri);
     return folder ? normalizeFile(folder.uri.fsPath) : null;
   }
 
   getPipelineRootForUri(uri) {
-    const workspaceRoot = this.getWorkspaceRoot(uri);
-    if (!workspaceRoot || uri.scheme !== "file") {
+    if (this.disposed || !uri || uri.scheme !== "file") {
       return null;
     }
-
-    return findNearestTargetsRoot(uri.fsPath, workspaceRoot) || null;
+    const workspaceRoot = this.getWorkspaceRoot(uri);
+    const nearest = workspaceRoot && findNearestTargetsRoot(uri.fsPath, workspaceRoot);
+    if (nearest) {
+      return nearest;
+    }
+    // Shared sources may live outside the directory containing _targets.R.
+    return [...this.getDependentRoots(uri.fsPath)].filter((root) => this.isActiveRoot(root)).sort()[0] || null;
   }
 
   async getIndexForUri(uri) {
@@ -187,12 +222,34 @@ class WorkspaceIndexManager {
     if (!pipelineRoot) {
       return null;
     }
-
-    if (!this.indices.has(pipelineRoot)) {
+    if (!this.isActiveRoot(pipelineRoot)) {
+      this.removeRoot(pipelineRoot);
+      return null;
+    }
+    if (this.refreshPromises.has(pipelineRoot)) {
+      await this.refreshPromises.get(pipelineRoot);
+    } else if (this.dirtyRoots.has(pipelineRoot)
+      || ((!this.indices.has(pipelineRoot) || this.failures.has(pipelineRoot))
+        && Date.now() >= (this.failures.get(pipelineRoot)?.retryAt || 0))) {
       await this.refreshWorkspace(pipelineRoot);
     }
+    const index = this.indices.get(pipelineRoot);
+    return index && !index.stale ? index : null;
+  }
 
-    return this.indices.get(pipelineRoot) || null;
+  isIndexCurrent(index) {
+    if (!index || index.stale) {
+      return false;
+    }
+    for (const document of vscode.workspace.textDocuments || []) {
+      if (document.uri.scheme === "file") {
+        const text = index.sourceTexts?.get(normalizeFile(document.uri.fsPath));
+        if (text !== undefined && text !== document.getText()) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   readFile(file) {
@@ -276,115 +333,328 @@ class WorkspaceIndexManager {
   }
 
   async refreshAll() {
-    const refreshes = [];
+    if (this.disposed) {
+      return;
+    }
+    const roots = new Set([...this.indices.keys(), ...this.dependenciesByRoot.keys(), ...this.refreshPromises.keys(), ...this.pendingRefreshes.keys()]);
     for (const folder of vscode.workspace.workspaceFolders || []) {
       const root = normalizeFile(folder.uri.fsPath);
-      const topLevelTargets = normalizeFile(`${root}/_targets.R`);
-      if (fs.existsSync(topLevelTargets)) {
+      if (fs.existsSync(path.join(root, "_targets.R"))) {
+        roots.add(root);
+      }
+    }
+    // Include known/open nested roots even in hosts without findFiles().
+    for (const document of vscode.workspace.textDocuments || []) {
+      const root = this.getPipelineRootForUri(document.uri);
+      if (root) {
+        roots.add(root);
+      }
+    }
+    if (vscode.workspace.findFiles) {
+      try {
+        const files = await vscode.workspace.findFiles("**/_targets.R", "**/{.git,node_modules,renv,.venv,_targets}/**");
+        for (const uri of files) {
+          roots.add(normalizeFile(path.dirname(uri.fsPath)));
+        }
+      } catch (error) {
+        this.logFailure("Could not discover additional pipelines", error);
+      }
+    }
+    if (this.disposed) {
+      return;
+    }
+    const refreshes = [];
+    for (const root of roots) {
+      if (!this.isActiveRoot(root)) {
+        this.removeRoot(root);
+      } else {
         refreshes.push(this.refreshWorkspace(root));
       }
     }
-
     await Promise.all(refreshes);
   }
 
-  scheduleRefreshForUri(uri) {
-    const pipelineRoot = this.getPipelineRootForUri(uri);
-    if (!pipelineRoot) {
-      return;
-    }
-
-    this.scheduleRefresh(pipelineRoot);
+  isActiveRoot(root) {
+    const file = path.join(root, "_targets.R");
+    return !this.disposed && Boolean(this.getWorkspaceRoot(vscode.Uri.file(file))) && fs.existsSync(file);
   }
 
-  scheduleRefresh(rootPath) {
-    const root = normalizeFile(rootPath);
-    const existing = this.pendingRefreshes.get(root);
-    if (existing) {
-      clearTimeout(existing);
+  getDependentRoots(file) {
+    const normalized = normalizeFile(file);
+    const roots = new Set();
+    for (const [root, dependencies] of this.dependenciesByRoot) {
+      for (const dependency of dependencies) {
+        if (isPathInside(normalized, dependency) || isPathInside(dependency, normalized)) {
+          roots.add(root);
+          break;
+        }
+      }
     }
+    return roots;
+  }
 
-    // Debounce rebuilds so typing or file watcher bursts do not thrash the parser.
+  updateDependencies(root, dependencies) {
+    this.dependenciesByRoot.set(root, new Set(dependencies));
+    this.updateDependencyWatchers();
+  }
+
+  updateDependencyWatchers() {
+    if (!vscode.RelativePattern || this.disposed) {
+      return;
+    }
+    const directories = new Set();
+    for (const dependencies of this.dependenciesByRoot.values()) {
+      for (const file of dependencies) {
+        if (this.getWorkspaceRoot(vscode.Uri.file(file))) {
+          continue;
+        }
+        // Watch the nearest existing parent so missing imports can appear later.
+        let directory = path.dirname(file);
+        while (!fs.existsSync(directory) && path.dirname(directory) !== directory) {
+          directory = path.dirname(directory);
+        }
+        directories.add(directory);
+      }
+    }
+    for (const [directory, watcher] of this.dependencyWatchers) {
+      if (!directories.has(directory)) {
+        watcher.dispose();
+        this.dependencyWatchers.delete(directory);
+      }
+    }
+    for (const directory of directories) {
+      if (this.dependencyWatchers.has(directory)) {
+        continue;
+      }
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(directory, "**/*"));
+      const onEvent = (uri) => this.scheduleRefreshForUri(uri);
+      watcher.onDidChange(onEvent);
+      watcher.onDidCreate(onEvent);
+      watcher.onDidDelete(onEvent);
+      this.dependencyWatchers.set(directory, watcher);
+    }
+  }
+
+  removeRoot(rootPath) {
+    const root = normalizeFile(rootPath);
+    this.rootGenerations.delete(root);
+    for (const timers of [this.pendingRefreshes, this.retryTimers]) {
+      clearTimeout(timers.get(root));
+      timers.delete(root);
+    }
+    this.pendingModes.delete(root);
+    this.refreshAgain.delete(root);
+    this.refreshPromises.delete(root);
+    this.dirtyRoots.delete(root);
+    this.failures.delete(root);
+    this.indices.delete(root);
+    this.dependenciesByRoot.delete(root);
+    this.applyDiagnostics(root, { files: new Map() });
+    this.diagnosticsByWorkspace.delete(root);
+    this.diagnosticFilesByWorkspace.delete(root);
+    this.updateDependencyWatchers();
+    if (!this.disposed) {
+      this.indexRemovalEmitter.fire({ root });
+    }
+  }
+
+  scheduleRefreshForUri(uri) {
+    if (this.disposed || !uri || uri.scheme !== "file") {
+      return;
+    }
+    const file = normalizeFile(uri.fsPath);
+    const roots = this.getDependentRoots(file);
+    const nearest = this.getPipelineRootForUri(uri);
+    if (nearest) {
+      roots.add(nearest);
+    }
+    // Root deletion cannot be discovered by walking the filesystem afterward.
+    const deletedRoot = normalizeFile(path.dirname(file));
+    if (path.basename(file) === "_targets.R" && !fs.existsSync(file)) {
+      roots.add(deletedRoot);
+    }
+    for (const root of roots) {
+      if (!this.isActiveRoot(root)) {
+        this.removeRoot(root);
+        continue;
+      }
+      this.scheduleRefresh(root, { metadataOnly: isPathInside(file, path.join(root, "_targets", "meta")) });
+    }
+  }
+
+  scheduleRefresh(rootPath, options = {}) {
+    if (this.disposed) {
+      return;
+    }
+    const root = normalizeFile(rootPath);
+    const pending = this.pendingModes.get(root);
+    const metadataOnly = Boolean(options.metadataOnly && (!pending || pending.metadataOnly));
+    if (!metadataOnly) {
+      this.dirtyRoots.add(root);
+    }
+    clearTimeout(this.pendingRefreshes.get(root));
+    const since = pending?.since || Date.now();
+    this.pendingModes.set(root, { metadataOnly, since });
     const handle = setTimeout(() => {
+      const mode = this.pendingModes.get(root);
+      this.pendingModes.delete(root);
       this.pendingRefreshes.delete(root);
-      void this.refreshWorkspace(root);
-    }, 150);
-
+      void this.refreshWorkspace(root, mode);
+    }, Math.min(150, Math.max(0, 1000 - (Date.now() - since))));
     this.pendingRefreshes.set(root, handle);
   }
 
-  async refreshWorkspace(rootPath) {
+  async refreshWorkspace(rootPath, options = {}) {
     const root = normalizeFile(rootPath);
-    const existingRefresh = this.refreshPromises.get(root);
-    if (existingRefresh) {
-      return existingRefresh;
+    if (this.disposed) {
+      return null;
     }
-
-    const refreshPromise = (async () => {
-      try {
-        await ensureParserReady();
-
-        // Every refresh rebuilds a single pipeline rooted at the nearest _targets.R.
-        const index = buildStaticWorkspaceIndex({
-          ...this.getResolverOptions(),
-          readFile: (file) => this.readFile(file),
-          workspaceRoot: root
-        });
-
-        this.indices.set(root, index);
-        this.applyDiagnostics(root, index);
-        this.indexRefreshEmitter.fire({
-          index,
-          root
-        });
-
-        this.logIndexSummary(root, index);
-
-        return index;
-      } catch (error) {
-        this.logFailure(`Failed to index ${root}`, error, {
-          additionalSingleTargetFactories: this.getResolverOptions().additionalSingleTargetFactories.join(", "),
-          node: process.version,
-          platform: `${process.platform} ${process.arch}`,
-          rootFile: normalizeFile(`${root}/_targets.R`),
-          vscode: vscode.version,
-          ...this.getOpenDocumentDebugDetails(root),
-          workspaceRoot: root
-        });
-
-        vscode.window.showErrorMessage("tarborist failed to index the pipeline. See the tarborist output channel for details.");
-        return null;
-      } finally {
+    const existing = this.refreshPromises.get(root);
+    if (existing) {
+      const queued = this.refreshAgain.get(root);
+      this.refreshAgain.set(root, { metadataOnly: Boolean(options.metadataOnly && (!queued || queued.metadataOnly)) });
+      return existing;
+    }
+    clearTimeout(this.pendingRefreshes.get(root));
+    clearTimeout(this.retryTimers.get(root));
+    this.pendingRefreshes.delete(root);
+    this.pendingModes.delete(root);
+    this.retryTimers.delete(root);
+    const generation = this.rootGenerations.get(root) || Symbol(root);
+    this.rootGenerations.set(root, generation);
+    const isCurrent = () => !this.disposed && this.rootGenerations.get(root) === generation;
+    const promise = Promise.resolve().then(async () => {
+      let mode = options;
+      let result = null;
+      do {
+        if (!isCurrent()) {
+          return null;
+        }
+        const queued = this.refreshAgain.get(root);
+        if (queued) {
+          mode = { metadataOnly: Boolean(mode.metadataOnly && queued.metadataOnly) };
+        }
+        this.refreshAgain.delete(root);
+        const dependencies = new Set([path.join(root, "_targets.R")]);
+        const started = Date.now();
+        const before = getParserStatistics();
+        try {
+          if (!this.isActiveRoot(root)) {
+            this.removeRoot(root);
+            return null;
+          }
+          const previous = this.indices.get(root);
+          const metadataOnly = Boolean(mode.metadataOnly && previous && !previous.stale && !this.dirtyRoots.has(root));
+          if (metadataOnly) {
+            const targets = previous.completionTargets || previous.targets;
+            result = {
+              ...previous,
+              targetsMeta: readTargetsMeta(root, (file) => this.readFile(file), targets),
+              targetsProgress: readTargetsProgress(root, (file) => this.readFile(file), targets)
+            };
+          } else {
+            result = await runParserOperation(() => {
+              if (!isCurrent()) {
+                return null;
+              }
+              return buildStaticWorkspaceIndex({
+                ...this.getResolverOptions(),
+                onDependency: (file) => dependencies.add(file),
+                readFile: (file) => this.readFile(file),
+                workspaceRoot: root
+              });
+            }, {
+              retryAll: true,
+              onRetry: (error) => this.logFailure(`Retrying index for ${root}`, error)
+            });
+          }
+          if (!isCurrent()) {
+            return null;
+          }
+          if (!this.isActiveRoot(root)) {
+            this.removeRoot(root);
+            return null;
+          }
+          this.dirtyRoots.delete(root);
+          this.failures.delete(root);
+          this.updateDependencies(root, result.dependencyPaths || dependencies);
+          this.indices.set(root, result);
+          this.applyDiagnostics(root, result);
+          this.indexRefreshEmitter.fire({ index: result, root });
+          this.logIndexSummary(root, result);
+          if (this.outputChannel) {
+            const after = getParserStatistics();
+            this.outputChannel.appendLine(`  refresh=${metadataOnly ? "metadata" : "source"} durationMs=${Date.now() - started} parses=${after.parses - before.parses} liveTrees=${after.liveTrees} runtimeGeneration=${after.runtimeGeneration}`);
+          }
+        } catch (error) {
+          if (!isCurrent()) {
+            return null;
+          }
+          const previousFailure = this.failures.get(root);
+          this.failures.set(root, { retryAt: Date.now() + 1000 });
+          this.dirtyRoots.delete(root);
+          const previous = this.indices.get(root);
+          if (previous) {
+            this.indices.set(root, { ...previous, stale: true });
+          }
+          this.updateDependencies(root, new Set([...(this.dependenciesByRoot.get(root) || []), ...dependencies]));
+          this.applyDiagnostics(root, { files: new Map() });
+          this.indexRefreshEmitter.fire({ index: null, root });
+          this.logFailure(`Failed to index ${root}`, error, {
+            node: process.version,
+            platform: `${process.platform} ${process.arch}`,
+            rootFile: path.join(root, "_targets.R"),
+            vscode: vscode.version,
+            ...this.getOpenDocumentDebugDetails(root)
+          });
+          if (!previousFailure) {
+            vscode.window.showErrorMessage("tarborist failed to index the pipeline. See the tarborist output channel for details.");
+            this.retryTimers.set(root, setTimeout(() => {
+              this.retryTimers.delete(root);
+              if (this.isActiveRoot(root)) {
+                void this.refreshWorkspace(root);
+              } else {
+                this.removeRoot(root);
+              }
+            }, 1000));
+          }
+          result = null;
+        }
+        mode = this.refreshAgain.get(root);
+      } while (mode && isCurrent());
+      return result;
+    }).finally(() => {
+      if (this.refreshPromises.get(root) === promise) {
         this.refreshPromises.delete(root);
       }
-    })();
-
-    this.refreshPromises.set(root, refreshPromise);
-    return refreshPromise;
+    });
+    this.refreshPromises.set(root, promise);
+    return promise;
   }
 
   applyDiagnostics(root, index) {
-    // Replace diagnostics for every file that was previously or is currently part
-    // of this pipeline so stale warnings disappear when the graph changes.
     const previousFiles = this.diagnosticFilesByWorkspace.get(root) || new Set();
     const nextFiles = new Set(index.files.keys());
-    const allFiles = new Set([...previousFiles, ...nextFiles]);
-
-    for (const file of allFiles) {
-      const diagnostics = index.files.get(file)?.diagnostics || [];
-      if (!diagnostics.length) {
-        this.diagnosticCollection.delete(vscode.Uri.file(file));
-        continue;
+    this.diagnosticsByWorkspace.set(root, new Map(
+      [...index.files].map(([file, record]) => [file, record.diagnostics || []])
+    ));
+    for (const file of new Set([...previousFiles, ...nextFiles])) {
+      const combined = new Map();
+      for (const records of this.diagnosticsByWorkspace.values()) {
+        for (const diagnostic of records.get(file) || []) {
+          const key = JSON.stringify([diagnostic.range, diagnostic.severity, diagnostic.message]);
+          combined.set(key, diagnostic);
+        }
       }
-
-      this.diagnosticCollection.set(
-        vscode.Uri.file(file),
-        diagnostics.map((diagnostic) => toVsCodeDiagnostic(diagnostic))
-      );
+      if (!combined.size) {
+        this.diagnosticCollection.delete(vscode.Uri.file(file));
+      } else {
+        this.diagnosticCollection.set(vscode.Uri.file(file), [...combined.values()].map(toVsCodeDiagnostic));
+      }
     }
-
     this.diagnosticFilesByWorkspace.set(root, nextFiles);
   }
+
 }
 
 module.exports = {

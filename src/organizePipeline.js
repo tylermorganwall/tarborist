@@ -1,6 +1,6 @@
 "use strict";
 
-const { ensureParserReady, parseText } = require("./parser/treeSitter");
+const { parseText, runParserOperation } = require("./parser/treeSitter");
 const { getArgumentValue, getAssignmentParts, matchesCall, unwrapNode } = require("./parser/ast");
 const { comparePositions } = require("./util/ranges");
 
@@ -290,59 +290,60 @@ async function organizePipelineText({ file, index, text }) {
     };
   }
 
-  await ensureParserReady();
-  const tree = parseText(text, {
-    file,
-    phase: "organizePipeline"
-  });
-  const targetsInFile = buildTargetLookup(index, file);
-  const replacements = [];
-
-  for (const callNode of getTopLevelListCalls(tree)) {
-    const listData = collectListEntries(callNode, text, targetsInFile);
-    if (!listData) {
-      continue;
-    }
-
-    const replacement = buildListReplacement(listData, index.completionGraph || index.graph);
-    if (!replacement) {
-      continue;
-    }
-
-    const argumentsNode = callNode.childForFieldName ? callNode.childForFieldName("arguments") : null;
-    if (!argumentsNode) {
-      continue;
-    }
-
-    replacements.push({
-      end: positionToOffset(text, {
-        character: argumentsNode.endPosition.column - 1,
-        line: argumentsNode.endPosition.row
-      }),
-      start: positionToOffset(text, {
-        character: argumentsNode.startPosition.column + 1,
-        line: argumentsNode.startPosition.row
-      }),
-      text: replacement
+  return runParserOperation(() => {
+    const tree = parseText(text, {
+      file,
+      phase: "organizePipeline"
     });
-  }
+    const targetsInFile = buildTargetLookup(index, file);
+    const replacements = [];
 
-  if (!replacements.length) {
+    for (const callNode of getTopLevelListCalls(tree)) {
+      const listData = collectListEntries(callNode, text, targetsInFile);
+      if (!listData) {
+        continue;
+      }
+
+      const replacement = buildListReplacement(listData, index.completionGraph || index.graph);
+      if (!replacement) {
+        continue;
+      }
+
+      const argumentsNode = callNode.childForFieldName ? callNode.childForFieldName("arguments") : null;
+      if (!argumentsNode) {
+        continue;
+      }
+
+      replacements.push({
+        end: positionToOffset(text, {
+          character: argumentsNode.endPosition.column - 1,
+          line: argumentsNode.endPosition.row
+        }),
+        start: positionToOffset(text, {
+          character: argumentsNode.startPosition.column + 1,
+          line: argumentsNode.startPosition.row
+        }),
+        text: replacement
+      });
+    }
+
+    if (!replacements.length) {
+      return {
+        changed: false,
+        text
+      };
+    }
+
+    let nextText = text;
+    for (const replacement of replacements.sort((left, right) => right.start - left.start)) {
+      nextText = `${nextText.slice(0, replacement.start)}${replacement.text}${nextText.slice(replacement.end)}`;
+    }
+
     return {
-      changed: false,
-      text
+      changed: nextText !== text,
+      text: nextText
     };
-  }
-
-  let nextText = text;
-  for (const replacement of replacements.sort((left, right) => right.start - left.start)) {
-    nextText = `${nextText.slice(0, replacement.start)}${replacement.text}${nextText.slice(replacement.end)}`;
-  }
-
-  return {
-    changed: nextText !== text,
-    text: nextText
-  };
+  });
 }
 
 module.exports = {

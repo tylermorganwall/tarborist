@@ -8,6 +8,11 @@ function normalizeFile(file) {
   return path.normalize(path.resolve(file));
 }
 
+function isPathInside(file, directory) {
+  const relative = path.relative(directory, file);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
 function resolveRelativePath(fromFile, candidate) {
   if (!candidate) {
     return null;
@@ -30,7 +35,7 @@ function findNearestTargetsRoot(fromFile, workspaceRoot) {
   const normalizedWorkspaceRoot = normalizeFile(workspaceRoot);
   let currentDir = normalizeFile(path.dirname(fromFile));
 
-  while (currentDir.startsWith(normalizedWorkspaceRoot)) {
+  while (isPathInside(currentDir, normalizedWorkspaceRoot)) {
     const candidate = path.join(currentDir, "_targets.R");
     if (pathExists(candidate)) {
       return currentDir;
@@ -113,6 +118,7 @@ module.exports = {
   findNearestTargetsRoot,
   formatLocation,
   isRSourceFile,
+  isPathInside,
   normalizeFile,
   pathExists,
   relativeFile,

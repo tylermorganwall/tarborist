@@ -15,7 +15,7 @@ const {
   unwrapNode,
   walkNamed
 } = require("../parser/ast");
-const { parseText } = require("../parser/treeSitter");
+const { parseText, withTreeScope } = require("../parser/treeSitter");
 const { TARGET_LOAD_CALLS, TARGET_LOAD_RAW_CALLS, TARGET_READ_CALLS, TARGET_READ_RAW_CALLS } = require("../parser/queries");
 const { normalizeFile, pathExists } = require("../util/paths");
 const { rangeFromNode } = require("../util/ranges");
@@ -184,47 +184,49 @@ function collectQuartoRefsFromCode(code, file, lineMap) {
     return [];
   }
 
-  const refs = [];
-  const tree = parseText(code, {
-    file,
-    phase: "scanQuartoRChunks"
-  });
-  walkNamed(tree.rootNode, (node) => {
-    if (node.type !== "call") {
-      return;
-    }
-
-    const isRead = matchesCall(node, TARGET_READ_CALLS);
-    const isLoad = matchesCall(node, TARGET_LOAD_CALLS);
-    const isReadRaw = matchesCall(node, TARGET_READ_RAW_CALLS);
-    const isLoadRaw = matchesCall(node, TARGET_LOAD_RAW_CALLS);
-    if (!isRead && !isLoad && !isReadRaw && !isLoadRaw) {
-      return;
-    }
-
-    const firstArgument = getPositionalArgument(node, 0);
-    if (!firstArgument || !firstArgument.value) {
-      return;
-    }
-
-    const reference = extractQuartoTargetReference(firstArgument.value);
-    if (!reference || !reference.targetName) {
-      return;
-    }
-
-    const shortCallName = getShortCallName(node);
-    refs.push({
-      context: shortCallName && shortCallName.startsWith("tar_load")
-        ? (shortCallName.endsWith("_raw") ? "tar_load_raw" : "tar_load")
-        : (shortCallName && shortCallName.endsWith("_raw") ? "tar_read_raw" : "tar_read"),
+  return withTreeScope(() => {
+    const refs = [];
+    const tree = parseText(code, {
       file,
-      range: remapRange(reference.range, lineMap),
-      synthetic: false,
-      targetName: reference.targetName
+      phase: "scanQuartoRChunks"
     });
-  });
+    walkNamed(tree.rootNode, (node) => {
+      if (node.type !== "call") {
+        return;
+      }
 
-  return refs;
+      const isRead = matchesCall(node, TARGET_READ_CALLS);
+      const isLoad = matchesCall(node, TARGET_LOAD_CALLS);
+      const isReadRaw = matchesCall(node, TARGET_READ_RAW_CALLS);
+      const isLoadRaw = matchesCall(node, TARGET_LOAD_RAW_CALLS);
+      if (!isRead && !isLoad && !isReadRaw && !isLoadRaw) {
+        return;
+      }
+
+      const firstArgument = getPositionalArgument(node, 0);
+      if (!firstArgument || !firstArgument.value) {
+        return;
+      }
+
+      const reference = extractQuartoTargetReference(firstArgument.value);
+      if (!reference || !reference.targetName) {
+        return;
+      }
+
+      const shortCallName = getShortCallName(node);
+      refs.push({
+        context: shortCallName && shortCallName.startsWith("tar_load")
+          ? (shortCallName.endsWith("_raw") ? "tar_load_raw" : "tar_load")
+          : (shortCallName && shortCallName.endsWith("_raw") ? "tar_read_raw" : "tar_read"),
+        file,
+        range: remapRange(reference.range, lineMap),
+        synthetic: false,
+        targetName: reference.targetName
+      });
+    });
+
+    return refs;
+  });
 }
 
 function scanQuartoDependencyRefs(targetPath, readFile) {

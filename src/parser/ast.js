@@ -273,13 +273,14 @@ function getTableColumnAssignmentParts(node) {
 }
 
 function walkNamed(node, visitor) {
-  if (!node) {
-    return;
-  }
-
-  visitor(node);
-  for (const child of node.namedChildren || []) {
-    walkNamed(child, visitor);
+  const pending = node ? [node] : [];
+  while (pending.length) {
+    const current = pending.pop();
+    visitor(current);
+    const children = current.namedChildren || [];
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      pending.push(children[index]);
+    }
   }
 }
 

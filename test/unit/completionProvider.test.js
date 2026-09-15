@@ -185,7 +185,7 @@ test("completion provider suppresses parser-unavailable noise", async () => {
   const unavailableError = new Error("Tree-sitter parser is not initialized. Call ensureParserReady() before parsing.");
   const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode({
     treeSitter: {
-      async ensureParserReady() {
+      async runParserOperation() {
         throw unavailableError;
       },
       isParserUnavailableError(error) {
@@ -530,4 +530,76 @@ test("completion descendant filtering uses the full available target graph", asy
   assert.ok(labels.includes("beta"));
   assert.ok(labels.includes("lambda"));
   assert.ok(!labels.includes("gamma"));
+});
+
+test("live completion identifies the current target when old ranges overlap another target", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const root = path.resolve(__dirname, "../fixtures/direct");
+  const file = path.join(root, "_targets.R");
+  const initial = "list(\n  tar_target(alpha, 1),\n  tar_target(bravo, alpha),\n  tar_target(gamma, 3)\n)";
+  const index = buildStaticWorkspaceIndex({ workspaceRoot: root, readFile: () => initial });
+  const live = initial.replace("bravo, alpha", "gamma, alpha").replace("gamma, 3", "bravo, 3");
+  const provider = new TargetCompletionProvider({ getIndexForUri: async () => index, getWorkspaceRoot: () => root });
+  const items = await provider.provideCompletionItems(createDocument(live, file), { line: 2, character: 25 });
+  assert.ok(items.some((item) => item.label === "bravo"));
+  assert.ok(!items.some((item) => item.label === "gamma"));
+});
+
+test("live completion covers complete braced commands and named tar_plan entries", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const root = path.resolve(__dirname, "../fixtures/direct");
+  const file = path.join(root, "_targets.R");
+  for (const initial of [
+    "list(tar_target(alpha, 1), tar_target(bravo, { alpha; 2 }))",
+    "tar_plan(alpha = 1, bravo = { alpha; 2 })"
+  ]) {
+    const index = buildStaticWorkspaceIndex({ workspaceRoot: root, readFile: () => initial });
+    const live = `\n${initial}`;
+    const provider = new TargetCompletionProvider({ getIndexForUri: async () => index, getWorkspaceRoot: () => root });
+    const items = await provider.provideCompletionItems(createDocument(live, file), {
+      line: 1, character: initial.lastIndexOf("alpha") + 3
+    });
+    assert.ok(items.some((item) => item.label === "alpha"), initial);
+    assert.ok(!items.some((item) => item.label === "bravo"), initial);
+  }
+});
+
+test("repeated live completions parse once per request and release every tree", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const { getParserStatistics } = require("../../src/parser/treeSitter");
+  const { index, root } = buildIndex("completion_live_region");
+  const file = path.join(root, "_targets.R");
+  const live = fs.readFileSync(file, "utf8").replace("tar_target(lambda, 3)", "tar_target(lambda, 3 + alp)");
+  const lines = live.split("\n");
+  const line = lines.findIndex((value) => value.includes("3 + alp"));
+  const provider = new TargetCompletionProvider({ getIndexForUri: async () => index, getWorkspaceRoot: () => root });
+  const before = getParserStatistics();
+  for (let count = 0; count < 50; count += 1) {
+    const items = await provider.provideCompletionItems(createDocument(live, file), { line, character: lines[line].indexOf("alp") + 3 });
+    const alpha = items.find((item) => item.label === "alpha");
+    assert.ok(alpha);
+    assert.match(provider.resolveCompletionItem(alpha).detail, /down 1/);
+    assert.equal(getParserStatistics().liveTrees, 0);
+  }
+  assert.equal(getParserStatistics().parses - before.parses, 50);
+});
+
+test("completion discards canceled requests and documents changed during index lookup", async () => {
+  const { TargetCompletionProvider } = loadCompletionProviderWithMockVscode();
+  const { getParserStatistics } = require("../../src/parser/treeSitter");
+  const { index, root } = buildIndex("completion_live_region");
+  const file = path.join(root, "_targets.R");
+  const initial = fs.readFileSync(file, "utf8");
+  let current = initial;
+  const document = createDocument(initial, file);
+  document.getText = () => current;
+  const provider = new TargetCompletionProvider({
+    async getIndexForUri() { current = `\n${initial}`; return index; },
+    getWorkspaceRoot: () => root
+  });
+  const before = getParserStatistics();
+  assert.deepEqual(await provider.provideCompletionItems(document, { line: 3, character: 25 }), []);
+  current = initial;
+  assert.deepEqual(await provider.provideCompletionItems(document, { line: 3, character: 25 }, { isCancellationRequested: true }), []);
+  assert.equal(getParserStatistics().parses, before.parses);
 });

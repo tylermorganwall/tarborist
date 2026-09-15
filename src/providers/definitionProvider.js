@@ -5,7 +5,7 @@
 const { normalizeFile } = require("../util/paths");
 const { toVsCodeLocation } = require("../util/vscode");
 const { getTargetLocation } = require("../targetLocation");
-const { findTargetAtPosition } = require("./shared");
+const { findTargetAtPosition, getCurrentIndexForDocument, isRequestCurrent } = require("./shared");
 
 class TargetDefinitionProvider {
   constructor(indexManager) {
@@ -13,8 +13,9 @@ class TargetDefinitionProvider {
   }
 
   async provideDefinition(document, position) {
-    const index = await this.indexManager.getIndexForUri(document.uri);
-    if (!index) {
+    const text = document.getText();
+    const index = await getCurrentIndexForDocument(this.indexManager, document);
+    if (!index || !isRequestCurrent(document, text)) {
       return null;
     }
 

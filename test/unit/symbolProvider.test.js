@@ -139,6 +139,7 @@ test("document symbols expose the full target universe for the current file", as
   });
 
   const symbols = await provider.provideDocumentSymbols({
+    getText: () => fs.readFileSync(path.join(root, "_targets.R"), "utf8"),
     uri: {
       fsPath: path.join(root, "_targets.R")
     }
@@ -159,6 +160,7 @@ test("document symbols include generated tar_map() targets in the source file ou
   });
 
   const symbols = await provider.provideDocumentSymbols({
+    getText: () => fs.readFileSync(path.join(root, "_targets.R"), "utf8"),
     uri: {
       fsPath: path.join(root, "_targets.R")
     }

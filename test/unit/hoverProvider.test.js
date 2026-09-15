@@ -213,7 +213,7 @@ test("hover provider suppresses parser-unavailable noise", async () => {
   const unavailableError = new Error("Tree-sitter parser is not initialized. Call ensureParserReady() before parsing.");
   const { TargetHoverProvider } = loadHoverProviderWithMockVscode({ timeZone: "UTC" }, {
     treeSitter: {
-      async ensureParserReady() {
+      async runParserOperation() {
         throw unavailableError;
       },
       isParserUnavailableError(error) {
@@ -828,4 +828,36 @@ test("direct-downstream quick-pick descriptions are labeled as direct", async ()
   assert.equal(payload.title, "Direct downstream of a");
   assert.equal(payload.targets[0].name, "b");
   assert.match(payload.targets[0].description, /^<direct> _targets\.R:3$/);
+});
+
+test("hover refreshes stale document ranges before resolving the cursor", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("direct");
+  const file = path.join(root, "_targets.R");
+  const live = `\n${fs.readFileSync(file, "utf8")}`;
+  const document = createDocument(live, file);
+  const lines = live.split("\n");
+  const line = lines.findIndex((value) => value.includes("tar_target(a, 1)"));
+  let refreshes = 0;
+  const provider = new TargetHoverProvider({
+    getIndexForUri: async () => index,
+    getWorkspaceRoot: () => root,
+    getPipelineRootForUri: () => root,
+    async refreshWorkspace() {
+      refreshes += 1;
+      return buildStaticWorkspaceIndex({ workspaceRoot: root, readFile: () => live });
+    }
+  });
+  const hover = await provider.provideHover(document, { line, character: lines[line].indexOf("a, 1") });
+  assert.ok(hover);
+  assert.equal(refreshes, 1);
+});
+
+test("hover avoids stale coordinate lookups when a fresh snapshot is unavailable", async () => {
+  const { TargetHoverProvider } = loadHoverProviderWithMockVscode();
+  const { index, root } = buildIndex("direct");
+  const file = path.join(root, "_targets.R");
+  const live = `\n${fs.readFileSync(file, "utf8")}`;
+  const provider = new TargetHoverProvider({ getIndexForUri: async () => index, getWorkspaceRoot: () => root });
+  assert.equal(await provider.provideHover(createDocument(live, file), { line: 2, character: 15 }), null);
 });

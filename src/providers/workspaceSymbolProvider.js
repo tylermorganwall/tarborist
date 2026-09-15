@@ -40,6 +40,9 @@ class TargetWorkspaceSymbolProvider {
     const results = [];
 
     for (const index of this.indexManager.indices.values()) {
+      if (index.stale) {
+        continue;
+      }
       const targets = [...getWorkspaceSymbolTargets(index).values()]
         .filter((target) => matchesWorkspaceQuery(target.name, normalizedQuery))
         .sort((left, right) => compareSymbolTargets(left, right, normalizedQuery));

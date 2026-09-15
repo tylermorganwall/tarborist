@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.18.0] - 2026-09-15
+
+### Fixed
+
+- Release Tree-sitter trees after indexing, completion, hover, Quarto scanning, pipeline organization, and execution-position analysis, including failed operations. Published indexes now contain no Tree-sitter objects.
+- Recover from failures during both parsing and tree traversal, serialize parser initialization and retries, and prevent obsolete initialization from replacing a newer parser.
+- Withhold failed index snapshots, retry transient failures, and prevent refreshes from publishing after pipeline removal or extension disposal.
+- Correct save-event handling and refresh nested pipelines, shared imports, missing imports that appear later, and Quarto dependencies. Preserve diagnostics from every pipeline that owns a shared file.
+- Validate editor ranges against current source text, use the live enclosing target for completions, and discard obsolete editor updates. Clear per-pipeline decoration state when its root is removed.
+
+### Changed
+
+- Compute graph reachability on demand with a bounded cache, reuse equivalent pipeline/completion graphs, and use iterative cycle detection for deep pipelines.
+- Refresh metadata without reparsing source or rebuilding its graph. Completions parse each document once per request and compute downstream counts when an item is resolved.
+- Log refresh duration, parse counts, owned tree counts, and runtime generation for troubleshooting.
+
 ## [0.17.0] - 2026-05-30
 
 ### Fixed

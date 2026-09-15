@@ -15,8 +15,8 @@ const { TargetDocumentLinkProvider } = require("./providers/documentLinkProvider
 const { TargetHoverProvider } = require("./providers/hoverProvider");
 const { TargetWorkspaceSymbolProvider } = require("./providers/workspaceSymbolProvider");
 const { isCommentNode } = require("./parser/ast");
-const { ensureParserReady, parseText } = require("./parser/treeSitter");
-const { findCompletionRegion, findTargetAtPosition } = require("./providers/shared");
+const { parseText, resetParser, runParserOperation } = require("./parser/treeSitter");
+const { findCompletionRegion, findTargetAtPosition, isDocumentCurrent } = require("./providers/shared");
 const { normalizeFile } = require("./util/paths");
 const { containsPosition, rangeFromNode, rangeLength } = require("./util/ranges");
 const { toVsCodeRange } = require("./util/vscode");
@@ -49,7 +49,7 @@ async function getSelectedOrCurrentTarget(editor, indexManager) {
   }
 
   const index = await indexManager.getIndexForUri(editor.document.uri);
-  if (!index) {
+  if (!index || !isDocumentCurrent(index, editor.document)) {
     return undefined;
   }
 
@@ -123,7 +123,7 @@ async function canExecuteInPlace(editor, indexManager) {
   }
 
   const index = await indexManager.getIndexForUri(editor.document.uri);
-  if (!index) {
+  if (!index || !isDocumentCurrent(index, editor.document)) {
     return false;
   }
 
@@ -141,20 +141,29 @@ async function canExecuteInPlace(editor, indexManager) {
   return Boolean(findCompletionRegion(index, file, position));
 }
 
+let tarLoadContextGeneration = 0;
+let executeContextGeneration = 0;
+
 async function updateTarLoadHereContext(indexManager, editor = vscode.window.activeTextEditor) {
+  const generation = ++tarLoadContextGeneration;
   const enabled = Boolean(
     editor &&
     editor.document &&
     editor.document.languageId === "r" &&
     await getSelectedOrCurrentTarget(editor, indexManager)
   );
-  await vscode.commands.executeCommand("setContext", TAR_LOAD_HERE_CONTEXT_KEY, enabled);
+  if (generation === tarLoadContextGeneration) {
+    await vscode.commands.executeCommand("setContext", TAR_LOAD_HERE_CONTEXT_KEY, enabled);
+  }
   return enabled;
 }
 
 async function updateExecuteInPlaceContext(indexManager, editor = vscode.window.activeTextEditor) {
+  const generation = ++executeContextGeneration;
   const enabled = Boolean(await canExecuteInPlace(editor, indexManager));
-  await vscode.commands.executeCommand("setContext", EXECUTE_IN_PLACE_CONTEXT_KEY, enabled);
+  if (generation === executeContextGeneration) {
+    await vscode.commands.executeCommand("setContext", EXECUTE_IN_PLACE_CONTEXT_KEY, enabled);
+  }
   return enabled;
 }
 
@@ -391,32 +400,33 @@ async function findBracedRegionPostExecutionRange(document, region, position) {
     return null;
   }
 
-  await ensureParserReady();
-  const tree = parseText(document.getText(), {
-    character: position.character,
-    file: document.uri && document.uri.fsPath,
-    line: position.line,
-    phase: "executeInPlace"
+  return runParserOperation(() => {
+    const tree = parseText(document.getText(), {
+      character: position.character,
+      file: document.uri && document.uri.fsPath,
+      line: position.line,
+      phase: "executeInPlace"
+    });
+    const bracedNode = findBracedNodeForRegion(tree.rootNode, region, position);
+    if (!bracedNode) {
+      return null;
+    }
+
+    const semanticChildren = getSemanticBracedChildren(bracedNode);
+    if (semanticChildren.length <= 1) {
+      return region.range;
+    }
+
+    const currentIndex = semanticChildren.findIndex((child) => containsPosition(rangeFromNode(child), position));
+    if (currentIndex < 0) {
+      return region.range;
+    }
+
+    const currentRange = rangeFromNode(semanticChildren[currentIndex]);
+    const nextChild = semanticChildren[currentIndex + 1] || null;
+    const nextRange = nextChild ? rangeFromNode(nextChild) : null;
+    return makeCollapsedRangeAt(findPostExpressionPosition(document, currentRange, nextRange, region.range));
   });
-  const bracedNode = findBracedNodeForRegion(tree.rootNode, region, position);
-  if (!bracedNode) {
-    return null;
-  }
-
-  const semanticChildren = getSemanticBracedChildren(bracedNode);
-  if (semanticChildren.length <= 1) {
-    return region.range;
-  }
-
-  const currentIndex = semanticChildren.findIndex((child) => containsPosition(rangeFromNode(child), position));
-  if (currentIndex < 0) {
-    return region.range;
-  }
-
-  const currentRange = rangeFromNode(semanticChildren[currentIndex]);
-  const nextChild = semanticChildren[currentIndex + 1] || null;
-  const nextRange = nextChild ? rangeFromNode(nextChild) : null;
-  return makeCollapsedRangeAt(findPostExpressionPosition(document, currentRange, nextRange, region.range));
 }
 
 async function getPostExecutionSelection(document, region, selection, regionText) {
@@ -454,6 +464,7 @@ async function executeTarLoadHere(editor, indexManager, positronApi = typeof try
     return false;
   }
 
+  await refreshIndexForEditor(editor, indexManager);
   const targetName = await getSelectedOrCurrentTarget(editor, indexManager);
   if (!targetName) {
     await vscode.window.showErrorMessage("No valid target under the cursor or selection.");
@@ -587,13 +598,14 @@ function registerOrganizePipelineCommand(context, indexManager, targetHeatmapCon
         return;
       }
 
+      const sourceText = editor.document.getText();
       const result = await organizePipelineText({
         file: normalizeFile(editor.document.uri.fsPath),
         index,
-        text: editor.document.getText()
+        text: sourceText
       });
 
-      if (!result.changed) {
+      if (!result.changed || editor.document.getText() !== sourceText) {
         return;
       }
 
@@ -774,7 +786,11 @@ async function activate(context) {
   await targetHeatmapController.refreshVisibleEditors();
 }
 
-function deactivate() {}
+function deactivate() {
+  tarLoadContextGeneration += 1;
+  executeContextGeneration += 1;
+  resetParser({ reloadRuntime: true });
+}
 
 module.exports = {
   activate,

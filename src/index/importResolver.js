@@ -88,7 +88,7 @@ function resolveFilePathExpression(node, fromFile) {
   };
 }
 
-function resolveSourceCall(callNode, fromFile) {
+function resolveSourceCall(callNode, fromFile, trackDependency) {
   const pathArgument = getNamedArgument(callNode, "file") || getPositionalArgument(callNode, 0);
   if (!pathArgument || !pathArgument.value) {
     return {
@@ -114,6 +114,7 @@ function resolveSourceCall(callNode, fromFile) {
   }
 
   const [item] = resolved.items;
+  trackDependency(item.resolvedPath);
   if (!pathExists(item.resolvedPath) || !isRSourceFile(item.resolvedPath)) {
     return {
       diagnostics: [
@@ -140,7 +141,7 @@ function resolveSourceCall(callNode, fromFile) {
   };
 }
 
-function resolveTarSourceCall(callNode, fromFile) {
+function resolveTarSourceCall(callNode, fromFile, trackDependency) {
   // tar_source() can fan out to many files, so enumerate .R files eagerly.
   const pathArgument = getNamedArgument(callNode, "files") || getPositionalArgument(callNode, 0);
   const resolved = pathArgument && pathArgument.value
@@ -171,6 +172,7 @@ function resolveTarSourceCall(callNode, fromFile) {
   let partial = false;
 
   for (const item of resolved.items) {
+    trackDependency(item.resolvedPath);
     if (!pathExists(item.resolvedPath)) {
       diagnostics.push(createDiagnostic(fromFile, item.range || rangeFromNode(callNode), "warning", `Could not resolve tar_source() path '${item.value}'`));
       partial = true;
@@ -210,13 +212,13 @@ function resolveTarSourceCall(callNode, fromFile) {
   };
 }
 
-function resolveImportCall(callNode, fromFile) {
+function resolveImportCall(callNode, fromFile, trackDependency = () => {}) {
   if (matchesCall(callNode, SOURCE_CALLS)) {
-    return resolveSourceCall(callNode, fromFile);
+    return resolveSourceCall(callNode, fromFile, trackDependency);
   }
 
   if (matchesCall(callNode, TAR_SOURCE_CALLS)) {
-    return resolveTarSourceCall(callNode, fromFile);
+    return resolveTarSourceCall(callNode, fromFile, trackDependency);
   }
 
   return {

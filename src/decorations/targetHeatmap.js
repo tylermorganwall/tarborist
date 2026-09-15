@@ -252,7 +252,7 @@ function isIndexedFileCurrent(index, file, readFile) {
   try {
     return readFile(normalizeFile(file)) === indexedText;
   } catch (_error) {
-    return true;
+    return false;
   }
 }
 
@@ -290,31 +290,23 @@ function isTargetNotBuilt(meta) {
   return !meta || !Number.isFinite(meta.timestampMs);
 }
 
-function positionToOffset(text, position) {
-  let offset = 0;
-  let line = 0;
-
-  while (line < position.line) {
-    const nextBreak = text.indexOf("\n", offset);
-    if (nextBreak === -1) {
-      return text.length;
-    }
-
-    offset = nextBreak + 1;
-    line += 1;
+function sourceWithOffsets(text) {
+  const lineOffsets = [0];
+  let offset = text.indexOf("\n");
+  while (offset !== -1) {
+    lineOffsets.push(offset + 1);
+    offset = text.indexOf("\n", offset + 1);
   }
-
-  return Math.min(text.length, offset + position.character);
+  return { text, lineOffsets };
 }
 
-function sliceRangeText(text, range) {
-  if (!text || !range) {
+function sliceRangeText(source, range) {
+  if (!source.text || !range) {
     return "";
   }
-
-  const start = positionToOffset(text, range.start);
-  const end = positionToOffset(text, range.end);
-  return text.slice(start, end);
+  const offset = (position) => Math.min(source.text.length,
+    (source.lineOffsets[position.line] ?? source.text.length) + position.character);
+  return source.text.slice(offset(range.start), offset(range.end));
 }
 
 function hashText(text) {
@@ -332,7 +324,7 @@ function buildTargetCodeHashes(index, readFile) {
     const normalized = normalizeFile(file);
     if (!textCache.has(normalized)) {
       const indexedText = getIndexedFileText(index, normalized);
-      textCache.set(normalized, indexedText === null ? readFile(normalized) : indexedText);
+      textCache.set(normalized, sourceWithOffsets(indexedText === null ? readFile(normalized) : indexedText));
     }
 
     return textCache.get(normalized);
@@ -882,6 +874,12 @@ function createStatusDecorationOptions(color, style, iconText) {
 class TargetHeatmapController {
   constructor(indexManager) {
     this.indexManager = indexManager;
+    this.disposed = false;
+    this.editorUpdates = new WeakMap();
+    this.removalSubscription = indexManager.onDidRemove?.(({ root }) => {
+      this.invalidationStates.delete(normalizeFile(root));
+      void this.refreshVisibleEditors();
+    });
     this.canceledDecorationType = null;
     this.changedDecorationType = null;
     this.decorationKey = "";
@@ -894,6 +892,9 @@ class TargetHeatmapController {
   }
 
   dispose() {
+    this.disposed = true;
+    this.removalSubscription?.dispose();
+    this.invalidationStates.clear();
     this.disposeDecorationTypes();
   }
 
@@ -979,6 +980,7 @@ class TargetHeatmapController {
   }
 
   clearEditor(editor) {
+    this.editorUpdates.set(editor, {});
     if (this.notBuiltDecorationType) {
       editor.setDecorations(this.notBuiltDecorationType, []);
     }
@@ -1044,7 +1046,7 @@ class TargetHeatmapController {
   }
 
   async updateEditor(editor, indexOverride = null, refreshOptions = {}) {
-    if (!editor || !editor.document || editor.document.uri.scheme !== "file" || editor.document.languageId !== "r") {
+    if (this.disposed || !editor || !editor.document || editor.document.uri.scheme !== "file" || editor.document.languageId !== "r") {
       return;
     }
 
@@ -1057,8 +1059,13 @@ class TargetHeatmapController {
       return;
     }
 
+    const update = {};
+    this.editorUpdates.set(editor, update);
     const index = indexOverride || await this.indexManager.getIndexForUri(editor.document.uri);
-    if (!index) {
+    if (this.disposed || this.editorUpdates.get(editor) !== update || editor.document.isClosed) {
+      return;
+    }
+    if (!index || index.stale) {
       this.clearEditor(editor);
       return;
     }
@@ -1070,6 +1077,10 @@ class TargetHeatmapController {
       ? (file) => this.indexManager.readFile(file)
       : null;
     const indexedFileCurrent = isIndexedFileCurrent(index, editor.document.uri.fsPath, readCurrentFile);
+    if (!indexedFileCurrent) {
+      this.clearEditor(editor);
+      return;
+    }
     const invalidationState = invalidationOptions.enabled && indexedFileCurrent
       ? (refreshOptions.refreshInvalidationState
         ? this.reconcileInvalidationState(root, index)
@@ -1142,11 +1153,16 @@ class TargetHeatmapController {
 
   async refreshEditorsForRoot(root, index) {
     const normalizedRoot = normalizeFile(root);
-    this.reconcileInvalidationState(normalizedRoot, index);
+    if (this.disposed) {
+      return;
+    }
+    if (index) {
+      this.reconcileInvalidationState(normalizedRoot, index);
+    }
     const visibleEditors = vscode.window.visibleTextEditors || [];
     const updates = visibleEditors
       .filter((editor) => this.indexManager.getPipelineRootForUri(editor.document.uri) === normalizedRoot)
-      .map((editor) => this.updateEditor(editor, index));
+      .map((editor) => index ? this.updateEditor(editor, index) : this.clearEditor(editor));
     await Promise.all(updates);
   }
 

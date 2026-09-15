@@ -30,7 +30,7 @@ const {
   TARGET_READ_CALLS,
   TARGET_READ_RAW_CALLS
 } = require("../parser/queries");
-const { parseText } = require("../parser/treeSitter");
+const { parseText, withTreeScope } = require("../parser/treeSitter");
 const { compareRanges, rangeFromNode, zeroRange } = require("../util/ranges");
 const { normalizeFile, pathExists, relativeFile } = require("../util/paths");
 const { analyzeFile } = require("./fileRecord");
@@ -1350,6 +1350,7 @@ function resolveTarQuartoCall(callNode, env, state, file, forcedName = null, for
 
   const refs = [];
   for (const item of resolved.items) {
+    state.trackDependency(item.resolvedPath);
     if (!pathExists(item.resolvedPath)) {
       addDiagnostic(state, file, item.range || rangeFromNode(pathArgument.value), "warning", `Could not resolve tar_quarto() path '${item.value}'`);
       continue;
@@ -1955,7 +1956,7 @@ function executeFile(file, state) {
     }
 
     if (statement.kind === "import") {
-      const resolution = resolveImportCall(statement.node, normalizedFile);
+      const resolution = resolveImportCall(statement.node, normalizedFile, state.trackDependency);
       record.importLinks.push(...resolution.links);
       record.imports.push(...resolution.imports);
       for (const diagnostic of resolution.diagnostics) {
@@ -2054,12 +2055,14 @@ function buildCompletionRegions(targets, generators) {
   return regions.sort((left, right) => compareRanges(left.range, right.range));
 }
 
-function buildStaticWorkspaceIndex(options) {
+function buildWorkspaceSnapshot(options) {
   // Build one whole-pipeline snapshot rooted at workspaceRoot/_targets.R.
   const workspaceRoot = normalizeFile(options.workspaceRoot);
   const rootFile = normalizeFile(path.join(workspaceRoot, "_targets.R"));
   const emptyIndex = {
     completionRegions: [],
+    dependencyPaths: new Set([rootFile]),
+    sourceTexts: new Map(),
     files: new Map(),
     generators: [],
     graph: buildPipelineGraph(new Map(), []),
@@ -2076,6 +2079,15 @@ function buildStaticWorkspaceIndex(options) {
     return emptyIndex;
   }
 
+  const dependencyPaths = new Set([rootFile]);
+  const sourceTexts = new Map();
+  const trackDependency = (file) => {
+    const normalized = normalizeFile(file);
+    dependencyPaths.add(normalized);
+    if (options.onDependency) {
+      options.onDependency(normalized);
+    }
+  };
   const state = {
     callSets: {
       directTargetCalls: createDirectTargetCalls(options.additionalSingleTargetFactories)
@@ -2084,7 +2096,15 @@ function buildStaticWorkspaceIndex(options) {
     generators: [],
     inProgress: new Set(),
     partial: false,
-    readFile: options.readFile
+    trackDependency,
+    readFile(file) {
+      const normalized = normalizeFile(file);
+      trackDependency(normalized);
+      if (!sourceTexts.has(normalized)) {
+        sourceTexts.set(normalized, options.readFile(normalized));
+      }
+      return sourceTexts.get(normalized);
+    }
   };
 
   const rootRecord = executeFile(rootFile, state);
@@ -2105,8 +2125,10 @@ function buildStaticWorkspaceIndex(options) {
   const refs = extractTargetRefs(targets);
   const graph = buildPipelineGraph(targets, refs);
   const completionTargets = collectAvailableTargets(rootRecord);
-  const completionRefs = extractTargetRefs(completionTargets);
-  const completionGraph = buildPipelineGraph(completionTargets, completionRefs);
+  const sameTargets = targets.size === completionTargets.size
+    && [...targets].every(([name, target]) => completionTargets.get(name) === target);
+  const completionRefs = sameTargets ? refs : extractTargetRefs(completionTargets);
+  const completionGraph = sameTargets ? graph : buildPipelineGraph(completionTargets, completionRefs);
   for (const diagnostic of buildCycleDiagnostics(targets, graph, state.partial)) {
     const fileRecord = state.files.get(diagnostic.file);
     if (fileRecord) {
@@ -2131,6 +2153,8 @@ function buildStaticWorkspaceIndex(options) {
     completionRefs,
     completionRegions: buildCompletionRegions(completionTargets, state.generators),
     completionTargets,
+    dependencyPaths,
+    sourceTexts,
     files: state.files,
     generators: state.generators,
     graph,
@@ -2142,6 +2166,52 @@ function buildStaticWorkspaceIndex(options) {
     targetsProgress: readTargetsProgress(workspaceRoot, options.readFile, completionTargets),
     targets
   };
+}
+
+function discardAnalysis(index) {
+  // Providers only need target/range data and pipeline-object membership. Do not
+  // retain nodes, including static-table bindings, past the build's tree scope.
+  const pending = [];
+  for (const record of index.files.values()) {
+    delete record.tree;
+    pending.push(record.lastValue);
+    for (const value of record.exportedSymbols.values()) {
+      pending.push(value);
+    }
+  }
+  const seen = new Set();
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    if (value.kind === "TargetObject") {
+      delete value.target._analysis;
+    } else if (value.kind === "TargetList") {
+      for (const item of value.items) {
+        pending.push(item);
+      }
+    } else if (value.kind === "StaticMap") {
+      for (const target of value.targets) {
+        delete target._analysis;
+      }
+    } else if (value.kind === "StaticTable") {
+      for (const row of value.rows) {
+        for (const binding of Object.values(row)) {
+          delete binding.node;
+        }
+      }
+    }
+  }
+  for (const target of (index.completionTargets || index.targets).values()) {
+    delete target._analysis;
+  }
+  return index;
+}
+
+function buildStaticWorkspaceIndex(options) {
+  return withTreeScope(() => discardAnalysis(buildWorkspaceSnapshot(options)));
 }
 
 module.exports = {

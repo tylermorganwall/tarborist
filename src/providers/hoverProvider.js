@@ -5,12 +5,12 @@
 const vscode = require("vscode");
 
 const { findNodeAt, matchesCall, unpackArguments } = require("../parser/ast");
-const { ensureParserReady, isParserUnavailableError, parseText } = require("../parser/treeSitter");
+const { isParserUnavailableError, parseText, runParserOperation } = require("../parser/treeSitter");
 const { getTargetLocation } = require("../targetLocation");
 const { formatTimestampInTimeZone } = require("../index/targetsMeta");
 const { formatLocation, normalizeFile } = require("../util/paths");
 const { containsPosition } = require("../util/ranges");
-const { findCompletionRegion, findGeneratorAtPosition, findTargetAtPosition } = require("./shared");
+const { findCompletionRegion, findGeneratorAtPosition, findTargetAtPosition, getCurrentIndexForDocument, isRequestCurrent } = require("./shared");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_INLINE_DIRECT_TARGETS = 5;
@@ -700,7 +700,7 @@ class TargetHoverProvider {
     return root ? this.invalidationProvider.getInvalidationState(root) : null;
   }
 
-  async tryBuildHover(index, root, file, document, point, invalidationState = null) {
+  tryBuildHover(index, root, file, document, point, invalidationState = null) {
     const target = findTargetAtPosition(index, file, point, {
       includeSynthetic: true
     });
@@ -771,9 +771,10 @@ class TargetHoverProvider {
     return new vscode.Hover(markdown);
   }
 
-  async provideHover(document, position) {
+  async provideHover(document, position, token) {
+    const text = document.getText();
     try {
-      const index = await this.indexManager.getIndexForUri(document.uri);
+      const index = await getCurrentIndexForDocument(this.indexManager, document);
       if (!index) {
         return null;
       }
@@ -781,8 +782,14 @@ class TargetHoverProvider {
       const root = this.indexManager.getWorkspaceRoot(document.uri);
       const invalidationState = this.getInvalidationState(document.uri, root);
       const file = normalizeFile(document.uri.fsPath);
-      await ensureParserReady();
-      return await this.tryBuildHover(index, root, file, document, position, invalidationState);
+      return await runParserOperation(() => {
+        if (!isRequestCurrent(document, text, token)) {
+          return null;
+        }
+        return this.tryBuildHover(index, root, file, document, position, invalidationState);
+      }, {
+        onRetry: (error) => this.indexManager.logFailure?.("Retrying hover after parser failure", error)
+      });
     } catch (error) {
       if (!isParserUnavailableError(error) && this.indexManager && typeof this.indexManager.logFailure === "function") {
         this.indexManager.logFailure("Hover provider failed", error, buildProviderParseContext(document, position, "hoverProvider"));

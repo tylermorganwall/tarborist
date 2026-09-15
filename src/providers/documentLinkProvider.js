@@ -2,6 +2,7 @@
 
 // Turn statically resolved source()/tar_source() paths into clickable links.
 const vscode = require("vscode");
+const { getCurrentIndexForDocument, isRequestCurrent } = require("./shared");
 
 const { normalizeFile } = require("../util/paths");
 const { toVsCodeRange } = require("../util/vscode");
@@ -12,8 +13,9 @@ class TargetDocumentLinkProvider {
   }
 
   async provideDocumentLinks(document) {
-    const index = await this.indexManager.getIndexForUri(document.uri);
-    if (!index) {
+    const text = document.getText();
+    const index = await getCurrentIndexForDocument(this.indexManager, document);
+    if (!index || !isRequestCurrent(document, text)) {
       return [];
     }
 

@@ -10,86 +10,120 @@ function ensureSet(map, key) {
   return map.get(key);
 }
 
-function buildReachability(adjacency) {
-  // Precompute descendants/ancestors once so completion and hover lookups stay cheap.
-  const closure = new Map();
+class ReachabilityMap {
+  constructor(adjacency) {
+    this.adjacency = adjacency;
+    this.cache = new Map();
+    this.cachedEntries = 0;
+  }
 
-  for (const node of adjacency.keys()) {
+  get size() { return this.adjacency.size; }
+  has(name) { return this.adjacency.has(name); }
+  keys() { return this.adjacency.keys(); }
+
+  get(name) {
+    if (!this.has(name)) {
+      return undefined;
+    }
+    if (this.cache.has(name)) {
+      const value = this.cache.get(name);
+      this.cache.delete(name);
+      this.cache.set(name, value);
+      return value;
+    }
     const seen = new Set();
-    const stack = [...(adjacency.get(node) || [])];
-
-    while (stack.length) {
-      const candidate = stack.pop();
-      if (seen.has(candidate)) {
+    const pending = [...this.adjacency.get(name)];
+    while (pending.length) {
+      const current = pending.pop();
+      if (seen.has(current)) {
         continue;
       }
-
-      seen.add(candidate);
-      for (const next of adjacency.get(candidate) || []) {
+      seen.add(current);
+      for (const next of this.adjacency.get(current) || []) {
         if (!seen.has(next)) {
-          stack.push(next);
+          pending.push(next);
         }
       }
     }
-
-    closure.set(node, seen);
+    // Bound both the number of cached queries and total stored memberships.
+    // One unusually large query is returned to its caller without being cached.
+    if (seen.size <= 16384) {
+      while (this.cache.size && (this.cache.size >= 32 || this.cachedEntries + seen.size > 16384)) {
+        const oldest = this.cache.keys().next().value;
+        this.cachedEntries -= this.cache.get(oldest).size;
+        this.cache.delete(oldest);
+      }
+      this.cache.set(name, seen);
+      this.cachedEntries += seen.size;
+    }
+    return seen;
   }
 
-  return closure;
+  *entries() {
+    for (const name of this.keys()) {
+      yield [name, this.get(name)];
+    }
+  }
+
+  *values() {
+    for (const name of this.keys()) {
+      yield this.get(name);
+    }
+  }
+
+  [Symbol.iterator]() { return this.entries(); }
 }
 
 function tarjan(adjacency) {
-  // Standard Tarjan SCC walk to identify real cycles, including multi-node loops.
+  // Iterative Tarjan traversal: a long valid pipeline must not exhaust the JS
+  // stack before cycle diagnostics can be built.
   const indexByNode = new Map();
   const lowLinkByNode = new Map();
   const stack = [];
   const onStack = new Set();
   const components = [];
   let nextIndex = 0;
-
-  function visit(node) {
+  const enter = (node) => {
     indexByNode.set(node, nextIndex);
-    lowLinkByNode.set(node, nextIndex);
-    nextIndex += 1;
-
+    lowLinkByNode.set(node, nextIndex++);
     stack.push(node);
     onStack.add(node);
+    return { node, neighbors: (adjacency.get(node) || new Set()).values() };
+  };
 
-    for (const neighbor of adjacency.get(node) || []) {
-      if (!indexByNode.has(neighbor)) {
-        visit(neighbor);
-        lowLinkByNode.set(node, Math.min(lowLinkByNode.get(node), lowLinkByNode.get(neighbor)));
+  for (const root of adjacency.keys()) {
+    if (indexByNode.has(root)) {
+      continue;
+    }
+    const frames = [enter(root)];
+    while (frames.length) {
+      const frame = frames[frames.length - 1];
+      const neighbor = frame.neighbors.next();
+      if (!neighbor.done) {
+        if (!indexByNode.has(neighbor.value)) {
+          frames.push(enter(neighbor.value));
+        } else if (onStack.has(neighbor.value)) {
+          lowLinkByNode.set(frame.node, Math.min(lowLinkByNode.get(frame.node), indexByNode.get(neighbor.value)));
+        }
         continue;
       }
-
-      if (onStack.has(neighbor)) {
-        lowLinkByNode.set(node, Math.min(lowLinkByNode.get(node), indexByNode.get(neighbor)));
+      frames.pop();
+      if (frames.length) {
+        const parent = frames[frames.length - 1].node;
+        lowLinkByNode.set(parent, Math.min(lowLinkByNode.get(parent), lowLinkByNode.get(frame.node)));
+      }
+      if (lowLinkByNode.get(frame.node) === indexByNode.get(frame.node)) {
+        const component = [];
+        let node;
+        do {
+          node = stack.pop();
+          onStack.delete(node);
+          component.push(node);
+        } while (node !== frame.node);
+        components.push(component);
       }
     }
-
-    if (lowLinkByNode.get(node) !== indexByNode.get(node)) {
-      return;
-    }
-
-    const component = [];
-    while (stack.length) {
-      const current = stack.pop();
-      onStack.delete(current);
-      component.push(current);
-      if (current === node) {
-        break;
-      }
-    }
-
-    components.push(component);
   }
-
-  for (const node of adjacency.keys()) {
-    if (!indexByNode.has(node)) {
-      visit(node);
-    }
-  }
-
   return components;
 }
 
@@ -112,8 +146,8 @@ function buildPipelineGraph(targets, refs) {
     ensureSet(downstreamToUpstream, ref.enclosingTarget).add(ref.targetName);
   }
 
-  const descendants = buildReachability(upstreamToDownstream);
-  const ancestors = buildReachability(downstreamToUpstream);
+  const descendants = new ReachabilityMap(upstreamToDownstream);
+  const ancestors = new ReachabilityMap(downstreamToUpstream);
 
   const cycles = [];
   for (const component of tarjan(upstreamToDownstream)) {

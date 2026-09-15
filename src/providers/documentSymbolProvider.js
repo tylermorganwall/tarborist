@@ -1,6 +1,7 @@
 "use strict";
 
 const vscode = require("vscode");
+const { getCurrentIndexForDocument, isRequestCurrent } = require("./shared");
 
 const { getTargetLocation } = require("../targetLocation");
 const { normalizeFile } = require("../util/paths");
@@ -28,8 +29,9 @@ class TargetDocumentSymbolProvider {
   }
 
   async provideDocumentSymbols(document) {
-    const index = await this.indexManager.getIndexForUri(document.uri);
-    if (!index) {
+    const text = document.getText();
+    const index = await getCurrentIndexForDocument(this.indexManager, document);
+    if (!index || !isRequestCurrent(document, text)) {
       return [];
     }
 

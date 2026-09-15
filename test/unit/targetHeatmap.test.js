@@ -1090,3 +1090,59 @@ test("TargetHeatmapController waits for refreshed ranges before showing invalida
   assert.equal(changedCall.ranges[0].range.start.line, 2);
   assert.equal(downstreamCall.ranges[0].range.start.line, 3);
 });
+
+test("TargetHeatmapController releases removed-root state and ignores obsolete editor updates", async () => {
+  const { TargetHeatmapController } = loadTargetHeatmapWithMockVscode({ "targetHeatmap.enabled": true });
+  const { index, root } = buildIndex("direct");
+  const file = path.join(root, "_targets.R");
+  let release;
+  let removed;
+  let unsubscribed = false;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const calls = [];
+  const editor = {
+    document: { languageId: "r", uri: { fsPath: file, scheme: "file" } },
+    setDecorations: (type, ranges) => calls.push({ type, ranges })
+  };
+  const controller = new TargetHeatmapController({
+    onDidRemove(callback) { removed = callback; return { dispose() { unsubscribed = true; } }; },
+    getPipelineRootForUri: () => root,
+    getIndexForUri: () => pending,
+    readFile: (value) => fs.readFileSync(value, "utf8")
+  });
+  controller.reconcileInvalidationState(root, index);
+  assert.ok(controller.invalidationStates.has(root));
+  const oldUpdate = controller.updateEditor(editor);
+  await controller.updateEditor(editor, index);
+  const count = calls.length;
+  release(index);
+  await oldUpdate;
+  assert.equal(calls.length, count);
+  removed({ root });
+  assert.equal(controller.invalidationStates.size, 0);
+  controller.dispose();
+  assert.equal(unsubscribed, true);
+  await controller.updateEditor(editor, index);
+  assert.equal(calls.length, count);
+});
+
+test("disabling decorations cancels a pending update", async () => {
+  const config = { "targetHeatmap.enabled": true, "targetStatusDecorations.enabled": false, "targetInvalidationDecorations.enabled": false };
+  const { TargetHeatmapController } = loadTargetHeatmapWithMockVscode(config);
+  const { index, root } = buildIndex("direct");
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const calls = [];
+  const editor = {
+    document: { languageId: "r", uri: { fsPath: path.join(root, "_targets.R"), scheme: "file" } },
+    setDecorations: (type, ranges) => calls.push({ type, ranges })
+  };
+  const controller = new TargetHeatmapController({ getIndexForUri: () => pending, getPipelineRootForUri: () => root });
+  const oldUpdate = controller.updateEditor(editor);
+  config["targetHeatmap.enabled"] = false;
+  await controller.updateEditor(editor);
+  release(index);
+  await oldUpdate;
+  assert.equal(calls.length, 0);
+  controller.dispose();
+});
