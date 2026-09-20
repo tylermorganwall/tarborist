@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## [0.18.1] - 2026-09-20
+
+### Fixed
+
+- Exclude named argument labels from target dependencies, preventing false cycle warnings for commands such as `list(abc = code)` inside target `abc`.
+
 ## [0.18.0] - 2026-09-15
 
 ### Fixed

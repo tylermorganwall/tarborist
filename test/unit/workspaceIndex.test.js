@@ -175,6 +175,65 @@ test("detects static cycles and emits diagnostics", () => {
   assert.ok(diagnostics.some((diagnostic) => diagnostic.severity === "error" && diagnostic.message.includes("Cycle detected")));
 });
 
+test("ignores named argument labels when collecting target dependencies", () => {
+  const source = [
+    "list(",
+    "  tar_target(xyz, abc),",
+    "  tar_target(code, 1),",
+    "  tar_target(name = abc, command = {",
+    "    stuff",
+    "    list(xyz = 1, abc = code)",
+    "  })",
+    ")"
+  ].join("\n");
+
+  withTemporaryIndex(source, (index) => {
+    const refs = index.refs.filter((ref) => ref.enclosingTarget === "abc");
+    assert.equal(index.partial, false);
+    assert.deepEqual(refs.map((ref) => ref.targetName), ["code"]);
+    assert.deepEqual(index.graph.cycles, []);
+    const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+    assert.ok(!diagnostics.some((diagnostic) => /cycle/i.test(diagnostic.message)));
+  });
+});
+
+test("ignores target names used as labels in nested function arguments", () => {
+  withTemporaryIndex("tar_target(abc, transform(abc = list(abc = 1)))", (index) => {
+    assert.ok(index.targets.has("abc"));
+    assert.equal(index.partial, false);
+    assert.deepEqual(index.refs, []);
+    assert.deepEqual(index.graph.cycles, []);
+  });
+});
+
+test("preserves real dependencies in named argument values", () => {
+  const source = [
+    "list(",
+    "  tar_target(abc, 1),",
+    "  tar_target(result, list(abc = abc))",
+    ")"
+  ].join("\n");
+
+  withTemporaryIndex(source, (index) => {
+    const refs = index.refs.filter((ref) => ref.enclosingTarget === "result");
+    assert.deepEqual(refs.map((ref) => ref.targetName), ["abc"]);
+    const line = source.split("\n")[2];
+    assert.equal(refs[0].range.start.character, line.lastIndexOf("abc"));
+    assert.deepEqual([...index.graph.descendants.get("abc")], ["result"]);
+    assert.deepEqual(index.graph.cycles, []);
+  });
+});
+
+test("still diagnoses self references in named argument values", () => {
+  withTemporaryIndex("tar_target(abc, list(abc = abc))", (index) => {
+    assert.equal(index.refs.length, 1);
+    assert.equal(index.refs[0].targetName, "abc");
+    assert.deepEqual(index.graph.cycles, [["abc"]]);
+    const diagnostics = [...index.files.values()].flatMap((record) => record.diagnostics);
+    assert.ok(diagnostics.some((diagnostic) => diagnostic.message === "Cycle detected: abc -> abc"));
+  });
+});
+
 test("indexes sourced partial pipelines across files", () => {
   const index = buildIndex("sourced");
   const targetA = index.targets.get("a");

@@ -1619,7 +1619,9 @@ function isReferenceLike(node) {
 
   if (parent.type === "argument") {
     const nameNode = parent.childForFieldName ? parent.childForFieldName("name") : null;
-    if (nameNode === node) {
+    // Field lookup and traversal can return different wrappers for the same
+    // Tree-sitter node. Argument labels are names, not target references.
+    if (nameNode && nameNode.equals(node)) {
       return false;
     }
   }
