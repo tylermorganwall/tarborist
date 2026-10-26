@@ -31,6 +31,7 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - Expands a supported static subset of `tar_map()`, including `values = some_symbol` when `some_symbol` is built from supported static table helpers such as `expand_grid()`, `expand.grid()`, `bind_rows()`, `rbind()`, and top-level column assignment
 - Supports common single-target factories like `tar_file()`, `tar_qs()`, and `tar_skip()` out of the box, and can opt into additional `tar_target()`-like factories through the `tarborist.additionalSingleTargetFactories` setting
 - Builds a provisional dependency graph
+- Shows an interactive dependency graph with source-defined subpipelines grouped into nested clusters
 - Adds cycle diagnostics for statically detected cycles
 - Provides target-aware hover, Go to Definition, Ctrl-click navigation, and import document links
 - Adds a Positron-only `Targets: tar_load Here` command that loads the target under the cursor or selection into `.GlobalEnv` through the active R console
@@ -66,6 +67,143 @@ As `targets` pipelines grow, it becomes harder to answer simple questions quickl
 - fully resolve dynamic `tar_source()` paths or computed `tar_map()` values outside the supported static table subset
 
 When static analysis can only recover part of the pipeline, `tarborist` degrades gracefully and marks the index as partial.
+
+## Grouped pipeline graph
+
+Run **tarborist: Show Grouped Pipeline Graph** from the command palette. The
+view uses the existing Tree-sitter index and shows the targets returned by
+the pipeline, grouped by the named lists that contain them:
+
+```r
+targets_inputs = list(
+  tar_target(raw_data, read.csv("data.csv")),
+  tar_target(clean_data, na.omit(raw_data)),
+  NULL
+)
+
+targets_analysis = list(
+  tar_target(model, lm(y ~ x, data = clean_data)),
+  tar_target(model_summary, summary(model)),
+  NULL
+)
+
+list(targets_inputs, targets_analysis, NULL)
+```
+
+No naming prefix is required. The group names come from list definitions,
+and the arrows still connect individual targets across subpipelines.
+
+- Drag to pan, scroll to zoom, and use **Fit** to see the whole graph.
+- Search by target name or focus on a subpipeline.
+- Select a target to inspect its command and direct dependencies/dependents.
+- Hold **Shift** and click other targets to add or remove them from the
+  selection. A normal click selects one target. Search preserves the selection.
+- Select **Upstream only** to keep all selected targets and the union of their
+  transitive dependencies. Shared dependencies appear once. Targets that do
+  not feed any selection and empty groups are removed, then the graph is
+  laid out again.
+- Use **Show all** to restore the complete graph. Inspecting another visible
+  target leaves the active upstream filter in place.
+- Click a subpipeline box or its label, then use **Pin left** or **Pin right**
+  in the inspector to place the whole group at that end of the graph. Choose
+  **Top to bottom** in **Flow** to use **Pin top** and **Pin bottom** instead.
+  Existing pins follow the new direction. Reverse directions are also available.
+- Use **Clear pin** for the selected subpipeline, **Clear all pins** to keep the
+  current direction with automatic placement, or **Reset layout** to return
+  to automatic left-to-right flow. Upstream filtering preserves pins on hidden
+  groups, which return when **Show all** restores them.
+- In the selected box's **Box width** section, set **Target columns** to `1`
+  and choose **Apply width** to make the subpipeline narrow and tall. Larger
+  values allow more targets across. Leave the field blank or use **Clear width**
+  for automatic placement. Labels keep their normal size; the limit changes
+  how targets are arranged inside the box. **Reset layout** also clears widths.
+- Use **Target graph width (px)** above the graph to request more horizontal room
+  for the entire drawing. Enter a width and choose **Apply**, or press
+  **Enter**. The layout adds horizontal spacing while keeping target text at
+  its normal size. Leave the field blank or use **Clear width** for automatic
+  spacing. The setting works alongside pins and individual box column limits.
+- Right-click a target and choose **Open definition** to navigate to its current
+  indexed source position. The menu preserves the existing target selection.
+  **Shift+F10** opens it from the keyboard. Double-click and **Open source** use
+  the same navigation.
+- Export the displayed graph as SVG or Graphviz DOT. With an upstream filter
+  active, both exports contain only the retained targets, edges, and groups.
+  Both formats preserve the applied direction, group positions, column limits,
+  and overall graph spacing.
+- Open or refresh the view to include current unsaved editor buffers. Existing
+  index refreshes update an open view automatically.
+
+Groups preserve list identity through aliases, source-order reassignments,
+imports, nested lists, supported `tar_map()` expansion, and
+`tar_select_targets()` filtering. An outer list that only assembles named
+subpipelines does not add a redundant enclosing box. Targets outside a named
+list remain ungrouped. A duplicate target appearing in conflicting groups is
+shown once in their nearest common group with a diagnostic.
+
+The editor view is a static preview. It does not evaluate R setup code or run
+target commands. Unsupported dynamic construction remains subject to the
+index's existing partial-analysis diagnostics. Build colors describe the last
+recorded build, not whether a target is currently up to date.
+
+### R helper
+
+The source tree also includes `R/custom_graph.R`. This defines
+`tar_graph_subpipelines()` and uses the same parser and DOT renderer:
+
+```r
+source("/path/to/tarborist/R/custom_graph.R")
+options(tarborist.path = "/path/to/tarborist")
+
+tar_graph_subpipelines("_targets.R")
+tar_graph_subpipelines(direction = "TB", scale_nodes = TRUE)
+graph = tar_graph_subpipelines(output = "data")
+```
+
+Install the checkout's dependencies with `npm ci`, install the R packages
+`jsonlite` and `DiagrammeR`, and ensure Node.js is on R's PATH (or pass `node`).
+The default return is a DiagrammeR HTML widget. Use `output = "dot"` or
+`output = "data"` without DiagrammeR.
+
+To preserve the exact nodes, edges, and statuses resolved by `targets`, pass a
+network computed for the same script and source version:
+
+```r
+network = targets::tar_network(
+  script = "_targets.R",
+  targets_only = TRUE,
+  outdated = TRUE
+)
+tar_graph_subpipelines("_targets.R", network = network)
+```
+
+Computing `tar_network()` evaluates pipeline setup code, although it does not
+run target commands. The helper never calls it implicitly. With a supplied
+network, Tree-sitter contributes group membership and source locations; the
+network owns the node set, dependencies, and statuses. Targets that cannot be
+matched to a statically resolved definition remain ungrouped.
+
+See [the helper guide](docs/grouped-pipelines.md) for all options.
+
+### Command line and shareable HTML
+
+```sh
+node scripts/pipeline-graph.js /path/to/_targets.R --format html --output pipeline.html
+node scripts/pipeline-graph.js /path/to/_targets.R --format svg --output pipeline.svg
+node scripts/pipeline-graph.js /path/to/_targets.R --format dot --output pipeline.dot
+node scripts/pipeline-graph.js /path/to/_targets.R --format json --output pipeline.json
+```
+
+HTML output contains the complete interactive view and works offline, including
+upstream filtering, subpipeline pins, column limits, overall graph width, flow
+direction, and SVG/DOT exports.
+In standalone HTML, right-click and choose **Open definition in Positron**.
+Install this updated tarborist extension and open the matching project in
+Positron first. The link sends the target name and pipeline hint to tarborist,
+which resolves its current definition; moved source lines remain navigable.
+If several pipelines match, Positron asks which one to use. Refresh remains
+available in the editor; the standalone HTML graph is a snapshot.
+Graphviz is bundled as WebAssembly, so a system Graphviz installation is not
+required. Layout runs in a worker to keep the interface responsive.
 
 ## Optional settings
 

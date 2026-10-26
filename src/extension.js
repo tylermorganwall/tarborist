@@ -14,6 +14,8 @@ const { TargetDocumentSymbolProvider } = require("./providers/documentSymbolProv
 const { TargetDocumentLinkProvider } = require("./providers/documentLinkProvider");
 const { TargetHoverProvider } = require("./providers/hoverProvider");
 const { TargetWorkspaceSymbolProvider } = require("./providers/workspaceSymbolProvider");
+const { registerPipelineGraphCommand } = require("./visualization/pipelineGraphPanel");
+const { registerTargetNavigation } = require("./visualization/targetNavigation");
 const { isCommentNode } = require("./parser/ast");
 const { parseText, resetParser, runParserOperation } = require("./parser/treeSitter");
 const { findCompletionRegion, findTargetAtPosition, isDocumentCurrent } = require("./providers/shared");
@@ -638,6 +640,8 @@ async function activate(context) {
   registerTarLoadHereCommand(context, indexManager);
   registerExecuteInPlaceCommand(context, indexManager);
   registerOrganizePipelineCommand(context, indexManager, targetHeatmapController);
+  registerPipelineGraphCommand(context, indexManager, outputChannel);
+  registerTargetNavigation(context, indexManager, outputChannel);
 
   // Hover links and quick-picks hand back file/range payloads to these commands.
   context.subscriptions.push(vscode.commands.registerCommand("tarborist.openLocation", async (payload) => {

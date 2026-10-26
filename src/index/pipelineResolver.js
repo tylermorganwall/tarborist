@@ -366,6 +366,16 @@ function getAssignmentPipelineContext(valueNode, symbol) {
 function resolveListItemValue(argument, env, state, file, containerLabel = "list()", context = {}) {
   const resolved = resolveTopLevelValue(argument.value, env, state, file, context);
   if (isValidPipelineListValue(resolved)) {
+    // Preserve names on actual list-valued definitions. Referencing an existing
+    // list must not rename that list for every other alias that shares it.
+    if (argument.name && !resolved.groupOrigin
+      && (resolved.kind === "TargetList" || resolved.kind === "StaticMap")) {
+      resolved.groupOrigin = {
+        file,
+        label: argument.name,
+        range: rangeFromNode(argument.node)
+      };
+    }
     return resolved;
   }
 
@@ -1242,7 +1252,10 @@ function resolveTarSelectTargetsCall(callNode, env, state, file, context = {}) {
   const selectorArguments = unpackArguments(callNode).filter((argument) => argument.node !== targetsArgument.node && !argument.name);
 
   if (!selectorArguments.length) {
-    return makeTargetList(availableTargets.map((target) => makeTargetObject(target)));
+    return {
+      ...makeTargetList(availableTargets.map((target) => makeTargetObject(target))),
+      selectionSource: resolvedTargets
+    };
   }
 
   const selectedNames = [];
@@ -1268,12 +1281,15 @@ function resolveTarSelectTargetsCall(callNode, env, state, file, context = {}) {
     }
   }
 
-  return makeTargetList(
-    selectedNames
-      .map((name) => availableByName.get(name))
-      .filter(Boolean)
-      .map((target) => makeTargetObject(target))
-  );
+  return {
+    ...makeTargetList(
+      selectedNames
+        .map((name) => availableByName.get(name))
+        .filter(Boolean)
+        .map((target) => makeTargetObject(target))
+    ),
+    selectionSource: resolvedTargets
+  };
 }
 
 function resolveTarPlanNamedTarget(callNode, argument, file, context = {}) {
@@ -1926,6 +1942,13 @@ function executeFile(file, state) {
         normalizedFile,
         getAssignmentPipelineContext(statement.valueNode, statement.symbol)
       );
+      if (!resolved.groupOrigin && (resolved.kind === "TargetList" || resolved.kind === "StaticMap")) {
+        resolved.groupOrigin = {
+          file: normalizedFile,
+          label: statement.symbol,
+          range: rangeFromNode(statement.node)
+        };
+      }
       env.set(statement.symbol, resolved);
       if (isPipelineLikeValue(resolved)) {
         lastValue = resolved;
@@ -1941,6 +1964,13 @@ function executeFile(file, state) {
         normalizedFile,
         withSubpipelineContext({}, statement.symbol)
       );
+      if (!resolved.groupOrigin && (resolved.kind === "TargetList" || resolved.kind === "StaticMap")) {
+        resolved.groupOrigin = {
+          file: normalizedFile,
+          label: statement.symbol,
+          range: rangeFromNode(statement.node)
+        };
+      }
       env.set(statement.symbol, resolved);
       if (isPipelineLikeValue(resolved)) {
         lastValue = resolved;
@@ -2058,9 +2088,9 @@ function buildCompletionRegions(targets, generators) {
 }
 
 function buildWorkspaceSnapshot(options) {
-  // Build one whole-pipeline snapshot rooted at workspaceRoot/_targets.R.
+  // Build one whole-pipeline snapshot; the requested script defaults to _targets.R.
   const workspaceRoot = normalizeFile(options.workspaceRoot);
-  const rootFile = normalizeFile(path.join(workspaceRoot, "_targets.R"));
+  const rootFile = normalizeFile(options.script || path.join(workspaceRoot, "_targets.R"));
   const emptyIndex = {
     completionRegions: [],
     dependencyPaths: new Set([rootFile]),
@@ -2072,6 +2102,7 @@ function buildWorkspaceSnapshot(options) {
     partial: false,
     refs: [],
     rootFile,
+    workspaceRoot,
     targetsMeta: new Map(),
     targetsProgress: new Map(),
     targets: new Map()
@@ -2164,6 +2195,7 @@ function buildWorkspaceSnapshot(options) {
     partial: state.partial,
     refs,
     rootFile,
+    workspaceRoot,
     targetsMeta: readTargetsMeta(workspaceRoot, options.readFile, completionTargets),
     targetsProgress: readTargetsProgress(workspaceRoot, options.readFile, completionTargets),
     targets
@@ -2191,6 +2223,9 @@ function discardAnalysis(index) {
     if (value.kind === "TargetObject") {
       delete value.target._analysis;
     } else if (value.kind === "TargetList") {
+      if (value.selectionSource) {
+        pending.push(value.selectionSource);
+      }
       for (const item of value.items) {
         pending.push(item);
       }

@@ -5,7 +5,7 @@
   "description": "Static analysis for navigating and debugging complex R targets pipelines",
   "icon": "tarborist.png",
   "license": "GPL-3.0-or-later",
-  "version": "0.18.1",
+  "version": "0.19.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/tylermorganwall/tarborist.git"
@@ -21,6 +21,7 @@
   ],
   "activationEvents": [
     "onLanguage:r",
+    "onUri",
     "onStartupFinished",
     "workspaceContains:_targets.R"
   ],
@@ -193,6 +194,10 @@
         "title": "tarborist: Organize Pipeline by DAG"
       },
       {
+        "command": "tarborist.showPipelineGraph",
+        "title": "tarborist: Show Grouped Pipeline Graph"
+      },
+      {
         "command": "targetsTools.executeInPlace",
         "title": "Targets: Run Here Without Moving Cursor",
         "enablement": "isPositron && editorLangId == r && config.tarborist.executeInPlace.enabled"
@@ -225,11 +230,13 @@
     ]
   },
   "scripts": {
-    "test": "node --test test/unit/*.test.js"
+    "test": "node --test test/unit/*.test.js",
+    "graph": "node scripts/pipeline-graph.js"
   },
   "dependencies": {
     "@davisvaughan/tree-sitter-r": "^1.2.0",
     "@posit-dev/positron": "^0.2.0",
+    "@viz-js/viz": "3.31.0",
     "web-tree-sitter": "^0.26.8"
   },
   "devDependencies": {
