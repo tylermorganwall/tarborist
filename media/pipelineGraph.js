@@ -23,7 +23,7 @@
   let svg = viewport.querySelector("svg");
   const state = {
     selected: new Set(), inspected: null, inspectedGroup: null,
-    search: "", group: "", pan: null, suppressGroupClick: false, busy: false, contextMenu: null
+    search: "", group: "", pan: null, spacePan: false, suppressGraphClick: false, busy: false, contextMenu: null
   };
   let originalBox = [0, 0, 1, 1];
   let viewBox = originalBox.slice();
@@ -661,7 +661,7 @@
         openContextMenu(id, keyboard ? undefined : event.clientX, keyboard ? undefined : event.clientY);
       });
       element.addEventListener("dblclick", (event) => {
-        if (!event.shiftKey) {
+        if (!event.shiftKey && !state.spacePan) {
           openTargetDefinition(nodes.get(id));
         }
       });
@@ -738,20 +738,71 @@
       zoom(Math.exp(Math.max(-.4, Math.min(.4, event.deltaY * .001))), pointAt(event.clientX, event.clientY));
     }
   }, { passive: false });
-  viewport.addEventListener("pointerdown", (event) => {
-    state.suppressGroupClick = false;
-    if (!svg || event.button !== 0 || event.target.closest(".node")) {
+  function finishPan() {
+    const pan = state.pan;
+    if (!pan) {
       return;
     }
-    state.pan = { x: event.clientX, y: event.clientY, box: viewBox.slice(), matrix: svg.getScreenCTM().inverse(), moved: false };
+    state.pan = null;
+    state.suppressGraphClick = pan.moved || pan.withSpace;
+    viewport.classList.remove("is-panning");
+    if (viewport.hasPointerCapture(pan.pointerId)) {
+      viewport.releasePointerCapture(pan.pointerId);
+    }
+  }
+
+  function stopSpacePan() {
+    state.spacePan = false;
+    viewport.classList.remove("is-space-pan");
+    if (state.pan?.withSpace) {
+      finishPan();
+    }
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.code !== "Space" || event.ctrlKey || event.metaKey || event.altKey
+      || !viewport.matches(":hover")
+      || event.target.closest?.('input, textarea, select, button, a[href], [contenteditable]:not([contenteditable="false"])')) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    state.spacePan = true;
+    viewport.classList.add("is-space-pan");
+  }, true);
+  document.addEventListener("keyup", (event) => {
+    if (event.code === "Space" && state.spacePan) {
+      stopSpacePan();
+    }
+  }, true);
+  window.addEventListener("blur", () => {
+    stopSpacePan();
+    finishPan();
+  });
+
+  viewport.addEventListener("pointerdown", (event) => {
+    if (state.pan) {
+      return;
+    }
+    state.suppressGraphClick = false;
+    if (!svg || event.button !== 0 || (!state.spacePan && event.target.closest(".node"))) {
+      return;
+    }
+    state.pan = {
+      pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+      box: viewBox.slice(), matrix: svg.getScreenCTM().inverse(), moved: false, withSpace: state.spacePan
+    };
+    if (state.pan.withSpace) {
+      event.preventDefault();
+      viewport.setPointerCapture(event.pointerId);
+    }
   });
   viewport.addEventListener("pointermove", (event) => {
-    if (!state.pan) {
+    if (state.pan?.pointerId !== event.pointerId) {
       return;
     }
     if (!(event.buttons & 1)) {
-      state.pan = null;
-      viewport.classList.remove("is-panning");
+      finishPan();
       return;
     }
     const dx = event.clientX - state.pan.x;
@@ -761,7 +812,9 @@
     }
     if (!state.pan.moved) {
       state.pan.moved = true;
-      viewport.setPointerCapture(event.pointerId);
+      if (!viewport.hasPointerCapture(event.pointerId)) {
+        viewport.setPointerCapture(event.pointerId);
+      }
       viewport.classList.add("is-panning");
     }
     setViewBox([
@@ -772,19 +825,17 @@
     ]);
   });
   for (const eventName of ["pointerup", "pointercancel", "lostpointercapture"]) {
-    viewport.addEventListener(eventName, () => {
-      if (state.pan) {
-        state.suppressGroupClick = state.pan.moved;
+    viewport.addEventListener(eventName, (event) => {
+      if (state.pan?.pointerId === event.pointerId) {
+        finishPan();
       }
-      state.pan = null;
-      viewport.classList.remove("is-panning");
     });
   }
   viewport.addEventListener("click", (event) => {
-    if (state.suppressGroupClick) {
+    if (state.suppressGraphClick) {
       event.preventDefault();
       event.stopPropagation();
-      state.suppressGroupClick = false;
+      state.suppressGraphClick = false;
     }
   }, true);
   viewport.addEventListener("keydown", (event) => {
