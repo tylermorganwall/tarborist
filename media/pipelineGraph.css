@@ -92,6 +92,8 @@ input::placeholder { color: var(--muted); opacity: .8; }
 .graph-viewport > svg { display: block; width: 100%; height: 100%; min-height: 280px; }
 .graph-viewport .node { cursor: pointer; user-select: none; }
 .graph-viewport .cluster { cursor: pointer; user-select: none; }
+.graph-viewport.is-space-pan :is(.node, .cluster) { cursor: grab; }
+.graph-viewport.is-panning :is(.node, .cluster) { cursor: grabbing; }
 .graph-viewport .node, .graph-viewport .edge, .graph-viewport .cluster { transition: opacity .15s ease; }
 .graph-viewport .node.is-muted, .graph-viewport .edge.is-muted { opacity: .14; }
 .graph-viewport .cluster.is-muted { opacity: .35; }

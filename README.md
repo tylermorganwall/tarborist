@@ -93,7 +93,7 @@ list(targets_inputs, targets_analysis, NULL)
 No naming prefix is required. The group names come from list definitions,
 and the arrows still connect individual targets across subpipelines.
 
-- Drag to pan, scroll to zoom, and use **Fit** to see the whole graph.
+- Drag the background or hold Space and drag from a target to pan, scroll to zoom, and use **Fit** to see the whole graph.
 - Search by target name or focus on a subpipeline.
 - Select a target to inspect its command and direct dependencies/dependents.
 - Hold **Shift** and click other targets to add or remove them from the

@@ -133,7 +133,7 @@ function getPipelineGraphHtml({
         <button id="show-all" type="button">Show all</button>
       </div>
       <p id="graph-status" class="graph-status" role="status" aria-live="polite" hidden></p>
-      <div id="graph-viewport" class="graph-viewport" tabindex="0" aria-label="Pipeline graph. Drag the background to pan. Scroll to zoom. Shift-click to select multiple targets. Right-click a target to open its definition. Select a subpipeline box to set its position and width.">
+      <div id="graph-viewport" class="graph-viewport" tabindex="0" aria-label="Pipeline graph. Drag the background or hold Space and drag from a target to pan. Scroll to zoom. Shift-click to select multiple targets. Right-click a target to open its definition. Select a subpipeline box to set its position and width.">
         ${svgMarkup}
         <div id="empty-graph" class="empty-graph" hidden>
           <h2>No targets to display</h2>
@@ -142,7 +142,7 @@ function getPipelineGraphHtml({
       </div>
       <div class="graph-footer">
         <span id="filter-summary" role="status" aria-live="polite"></span>
-        <span class="interaction-hint">Shift-click to select multiple targets. Right-click for definition. Drag to pan. Scroll to zoom.</span>
+        <span class="interaction-hint">Shift-click to select multiple targets. Right-click for definition. Hold Space and drag to pan. Scroll to zoom.</span>
       </div>
     </section>
     <aside class="inspector" aria-label="Graph inspector">
